@@ -1,4 +1,5 @@
 import asyncio
+import os
 from datetime import datetime
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
@@ -14,8 +15,9 @@ SPREADSHEET_ID = '1D1QCbveZEJHjhERzPIC4_uEzbhV1DZccPo6RqjbdMso'
 
 # Авторизация в Google Sheets API
 scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+GOOGLE_SHEETS_KEY_FILE = './config/google_keys.json'
 creds = ServiceAccountCredentials.from_json_keyfile_name(
-    '/TG_timer/timetracking-436217-8f446dc303b1.json', scope)
+    'keys/timetracking-436217-8f446dc303b1.json', scope)
 client = gspread.authorize(creds)
 sheet = client.open_by_key(SPREADSHEET_ID).sheet1  # Открываем первую страницу таблицы
 
