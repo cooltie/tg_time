@@ -35,6 +35,11 @@ async def cmd_start(message: types.Message):
     timers[message.from_user.id] = {'state': 'selecting_project'}  # Устанавливаем состояние выбора проекта
     await message.answer("Выберите проект или добавьте новый:", reply_markup=keyboard)
 
+# Обработчик для кнопки "Start Over"
+@dp.message(lambda message: message.text == "Start Over")
+async def cmd_start_over(message: types.Message):
+    await cmd_start(message)  # Вызовем ту же функцию, что и для команды /start
+
 # Функция для выбора проекта
 @dp.message(lambda message: message.text in projects and timers.get(message.from_user.id, {}).get('state') == 'selecting_project')
 async def project_selection(message: types.Message):
@@ -92,7 +97,7 @@ async def handle_comment(message: types.Message):
     sheet.append_row([current_date, formatted_time, project, comment])
 
     # Создаем кнопку для команды /start
-    start_button = KeyboardButton(text="/start")
+    start_button = KeyboardButton(text="Start Over")
     start_keyboard = ReplyKeyboardMarkup(keyboard=[[start_button]], resize_keyboard=True)
 
     # Сообщаем об успешной записи и меняем клавиатуру на кнопку /start
