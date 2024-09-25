@@ -15,7 +15,7 @@ SPREADSHEET_ID = '1D1QCbveZEJHjhERzPIC4_uEzbhV1DZccPo6RqjbdMso'
 # Авторизация в Google Sheets API
 scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
 creds = ServiceAccountCredentials.from_json_keyfile_name(
-    '/Users/nikayc/Dropbox/Projects/pythonProject/keys/timetracking-436217-8f446dc303b1.json', scope)
+    '/TG_timer/timetracking-436217-8f446dc303b1.json', scope)
 client = gspread.authorize(creds)
 sheet = client.open_by_key(SPREADSHEET_ID).sheet1  # Открываем первую страницу таблицы
 
