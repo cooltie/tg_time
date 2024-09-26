@@ -1,6 +1,8 @@
 import asyncio
 from datetime import datetime
 import gspread
+import os
+import json
 from oauth2client.service_account import ServiceAccountCredentials
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
@@ -14,9 +16,14 @@ SPREADSHEET_ID = '1D1QCbveZEJHjhERzPIC4_uEzbhV1DZccPo6RqjbdMso'
 
 # Авторизация в Google Sheets API
 scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-GOOGLE_SHEETS_KEY_FILE = './config/google_keys.json'
-creds = ServiceAccountCredentials.from_json_keyfile_name(
-    'keys/timetracking-436217-8f446dc303b1.json', scope)
+
+json_keyfile = os.environ.get('GOOGLE_SHEETS_KEY_JSON')
+if json_keyfile:
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(json.loads(json_keyfile), scope)
+else:
+    raise ValueError("Переменная окружения GOOGLE_SHEETS_KEY_JSON не найдена")
+
+
 client = gspread.authorize(creds)
 sheet = client.open_by_key(SPREADSHEET_ID).sheet1  # Открываем первую страницу таблицы
 
