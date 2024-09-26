@@ -62,7 +62,7 @@ async def project_selection(message: types.Message):
     await message.answer(f"Таймер для '{message.text}' запущен! Нажми 'Стоп' для остановки.", reply_markup=keyboard)
 
 # Функция для обработки нового проекта
-@dp.message(lambda message: message.text not in projects and timers.get(message.from_user.id, {}).get('state') == 'selecting_project' and message.text != "Добавить новый проект")
+@dp.message(lambda message: message.text not in projects and timers.get(message.from_user.id, {}).get('state') == 'selecting_project' and message.text != "Новый проект")
 async def new_project(message: types.Message):
     projects.append(message.text)
     timers[message.from_user.id] = {
