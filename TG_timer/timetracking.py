@@ -38,10 +38,10 @@ projects = ["WNNB", "UKIDS"]
 # Функция для обработки команды /start
 @dp.message(Command('start'))
 async def cmd_start(message: types.Message):
-    buttons = [[KeyboardButton(text=project) for project in projects], [KeyboardButton(text="Добавить новый проект")]]
+    buttons = [[KeyboardButton(text=project) for project in projects], [KeyboardButton(text="Новый проект")]]
     keyboard = ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
     timers[message.from_user.id] = {'state': 'selecting_project'}  # Устанавливаем состояние выбора проекта
-    await message.answer("Выберите проект или добавьте новый:", reply_markup=keyboard)
+    await message.answer("Выбери проект или добавь новый:", reply_markup=keyboard)
 
 # Обработчик для кнопки "Start Over"
 @dp.message(lambda message: message.text == "Start Over")
@@ -59,7 +59,7 @@ async def project_selection(message: types.Message):
     }
     buttons = [[KeyboardButton(text="Стоп")]]
     keyboard = ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
-    await message.answer(f"Таймер для проекта '{message.text}' запущен! Нажмите 'Стоп' для остановки.", reply_markup=keyboard)
+    await message.answer(f"Таймер для '{message.text}' запущен! Нажми 'Стоп' для остановки.", reply_markup=keyboard)
 
 # Функция для обработки нового проекта
 @dp.message(lambda message: message.text not in projects and timers.get(message.from_user.id, {}).get('state') == 'selecting_project' and message.text != "Добавить новый проект")
@@ -72,7 +72,7 @@ async def new_project(message: types.Message):
     }
     buttons = [[KeyboardButton(text="Стоп")]]
     keyboard = ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
-    await message.answer(f"Новый проект '{message.text}' добавлен и таймер запущен! Нажмите 'Стоп' для остановки.", reply_markup=keyboard)
+    await message.answer(f"Проект '{message.text}' добавлен, таймер запущен. Нажми 'Стоп' для остановки.", reply_markup=keyboard)
 
 # Функция для обработки команды "Стоп"
 @dp.message(lambda message: message.text == "Стоп" and timers.get(message.from_user.id, {}).get('state') == 'running')
@@ -90,7 +90,7 @@ async def cmd_stop(message: types.Message):
         # Просим ввести комментарий
         timers[message.from_user.id]['state'] = 'awaiting_comment'  # Меняем состояние на ожидание комментария
         timers[message.from_user.id]['formatted_time'] = formatted_time
-        await message.answer("Таймер остановлен! Введите комментарий:")
+        await message.answer("Таймер остановлен! Введи комментарий:")
 
 # Обработка комментария
 @dp.message(lambda message: timers.get(message.from_user.id, {}).get('state') == 'awaiting_comment')
