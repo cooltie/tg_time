@@ -98,7 +98,7 @@ async def handle_comment(message: types.Message):
     user_id = message.from_user.id
     project = timers[user_id]['project']
     formatted_time = timers[user_id]['formatted_time']
-    current_date = datetime.now().strftime("%d-%m-%y")
+    current_date = datetime.now().strftime("%d.%m.%y")
     comment = message.text
 
     # Записываем данные в Google Spreadsheet
