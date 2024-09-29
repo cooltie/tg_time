@@ -8,21 +8,20 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
-# Токен бота
-API_TOKEN = '7769254890:AAHKxCtnL7qg3goFCKQCshZNfBDSmqs1hfg'
-
-# ID таблицы Google Spreadsheet
-SPREADSHEET_ID = '1D1QCbveZEJHjhERzPIC4_uEzbhV1DZccPo6RqjbdMso'
+from env import API_TOKEN, SPREADSHEET_ID
 
 # Авторизация в Google Sheets API
 scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
 
-json_keyfile = os.environ.get('GOOGLE_SHEETS_KEY_JSON')
-if json_keyfile:
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(json.loads(json_keyfile), scope)
-else:
-    raise ValueError("Переменная окружения GOOGLE_SHEETS_KEY_JSON не найдена")
+is_local = os.getenv("IS_LOCAL", "true") == "false"
 
+if is_local:
+    json_keyfile_path = "/Users/nikayc/Dropbox/Projects/pythonProject/keys" \
+                        "/timetracking-436217-8f446dc303b1.json"
+    creds = ServiceAccountCredentials.from_json_keyfile_name(json_keyfile_path, scope)
+else:
+    json_keyfile = os.environ.get('GOOGLE_SHEETS_KEY_JSON')
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(json.loads(json_keyfile), scope)
 
 client = gspread.authorize(creds)
 sheet = client.open_by_key(SPREADSHEET_ID).sheet1  # Открываем первую страницу таблицы
@@ -31,54 +30,72 @@ sheet = client.open_by_key(SPREADSHEET_ID).sheet1  # Открываем перв
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
-# Переменные для отслеживания времени и текущего проекта
-timers = {}
-projects = ["WNNB", "UKIDS"]
+# Переменные для отслеживания состояния пользователей
+user_timers = {}  # Хранение таймеров и состояния для каждого пользователя
+user_projects = {}  # Хранение проектов для каждого пользователя
 
 # Функция для обработки команды /start
 @dp.message(Command('start'))
 async def cmd_start(message: types.Message):
-    buttons = [[KeyboardButton(text=project) for project in projects], [KeyboardButton(text="Новый проект")]]
-    keyboard = ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
-    timers[message.from_user.id] = {'state': 'selecting_project'}  # Устанавливаем состояние выбора проекта
-    await message.answer("Выбери проект или добавь новый:", reply_markup=keyboard)
+    user_id = message.from_user.id
 
-# Обработчик для кнопки "Start Over"
-@dp.message(lambda message: message.text == "Start Over")
-async def cmd_start_over(message: types.Message):
-    await cmd_start(message)  # Вызовем ту же функцию, что и для команды /start
+    # Если у пользователя нет проектов
+    if user_id not in user_projects or not user_projects[user_id]:
+        user_timers[user_id] = {'state': 'awaiting_new_project'}
+        await message.answer("Введи название нового проекта:", reply_markup=types.ReplyKeyboardRemove())
+    else:
+        buttons = [[KeyboardButton(text=project) for project in user_projects[user_id]], [KeyboardButton(text="Новый проект")]]
+        keyboard = ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
+        user_timers[user_id] = {'state': 'selecting_project'}
+        await message.answer("Выбери проект или добавь новый:", reply_markup=keyboard)
 
-# Функция для выбора проекта
-@dp.message(lambda message: message.text in projects and timers.get(message.from_user.id, {}).get('state') == 'selecting_project')
+# Функция для обработки ввода названия нового проекта
+@dp.message(lambda message: user_timers.get(message.from_user.id, {}).get('state') == 'awaiting_new_project')
+async def handle_new_project(message: types.Message):
+    user_id = message.from_user.id
+    project_name = message.text.strip()
+
+    if project_name:
+        if user_id not in user_projects:
+            user_projects[user_id] = []
+        user_projects[user_id].append(project_name)
+
+        user_timers[user_id] = {
+            'project': project_name,
+            'start_time': datetime.now(),
+            'state': 'running'
+        }
+        buttons = [[KeyboardButton(text="Стоп")]]
+        keyboard = ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
+        await message.answer(f"Проект '{project_name}' добавлен, таймер запущен! Нажми 'Стоп' для остановки.", reply_markup=keyboard)
+
+# Функция для выбора существующего проекта
+@dp.message(lambda message: message.text in user_projects.get(message.from_user.id, []) and user_timers.get(message.from_user.id, {}).get('state') == 'selecting_project')
 async def project_selection(message: types.Message):
-    # Запуск таймера сразу после выбора проекта
-    timers[message.from_user.id] = {
+    user_id = message.from_user.id
+    user_timers[user_id] = {
         'project': message.text,
         'start_time': datetime.now(),
-        'state': 'running'  # Состояние таймера запущено
+        'state': 'running'
     }
     buttons = [[KeyboardButton(text="Стоп")]]
     keyboard = ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
     await message.answer(f"Таймер для '{message.text}' запущен! Нажми 'Стоп' для остановки.", reply_markup=keyboard)
 
-# Функция для обработки нового проекта
-@dp.message(lambda message: message.text not in projects and timers.get(message.from_user.id, {}).get('state') == 'selecting_project' and message.text != "Новый проект")
-async def new_project(message: types.Message):
-    projects.append(message.text)
-    timers[message.from_user.id] = {
-        'project': message.text,
-        'start_time': datetime.now(),
-        'state': 'running'  # Состояние таймера запущено
-    }
-    buttons = [[KeyboardButton(text="Стоп")]]
-    keyboard = ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
-    await message.answer(f"Проект '{message.text}' добавлен, таймер запущен. Нажми 'Стоп' для остановки.", reply_markup=keyboard)
+# Функция для обработки запроса на создание нового проекта
+@dp.message(lambda message: message.text == "Новый проект")
+async def request_new_project(message: types.Message):
+    user_id = message.from_user.id
+    user_timers[user_id] = {'state': 'awaiting_new_project'}
+    await message.answer("Введи название нового проекта:", reply_markup=types.ReplyKeyboardRemove())
 
 # Функция для обработки команды "Стоп"
-@dp.message(lambda message: message.text == "Стоп" and timers.get(message.from_user.id, {}).get('state') == 'running')
+@dp.message(lambda message: message.text == "Стоп" and user_timers.get(message.from_user.id, {}).get('state') == 'running')
 async def cmd_stop(message: types.Message):
-    if message.from_user.id in timers and timers[message.from_user.id]['start_time']:
-        start_time = timers[message.from_user.id]['start_time']
+    user_id = message.from_user.id
+
+    if user_id in user_timers and user_timers[user_id]['start_time']:
+        start_time = user_timers[user_id]['start_time']
         end_time = datetime.now()
         elapsed_time = end_time - start_time
 
@@ -87,35 +104,55 @@ async def cmd_stop(message: types.Message):
         minutes, _ = divmod(remainder, 60)
         formatted_time = f"{int(hours):02}:{int(minutes):02}"
 
-        # Просим ввести комментарий
-        timers[message.from_user.id]['state'] = 'awaiting_comment'  # Меняем состояние на ожидание комментария
-        timers[message.from_user.id]['formatted_time'] = formatted_time
-        await message.answer("Таймер остановлен! Введи комментарий:")
+        user_timers[user_id]['state'] = 'awaiting_comment'
+        user_timers[user_id]['formatted_time'] = formatted_time
+        try:
+            # Пробуем записать данные в Google Spreadsheet
+            await message.answer("Таймер остановлен! Введи комментарий:")
+        except Exception as e:
+            # Обработка ошибки при работе с Google Spreadsheet
+            await message.answer("Ошибка при попытке отправить данные на сервер. Связь с сервером прервалась.")
+            # Логируем ошибку (если есть логирование)
+            print(f"Ошибка: {e}")
+
+            # Фиксируем остановку таймера и сохраняем данные локально (в памяти)
+            # Можно добавить механизм повторной отправки данных позже
+            user_timers[user_id] = {
+                'project': user_timers[user_id]['project'],
+                'formatted_time': formatted_time,
+                'state': 'error',  # В случае ошибки устанавливаем состояние 'error'
+                'error_time': datetime.now()  # Фиксируем время возникновения ошибки
+            }
 
 # Обработка комментария
-@dp.message(lambda message: timers.get(message.from_user.id, {}).get('state') == 'awaiting_comment')
+@dp.message(lambda message: user_timers.get(message.from_user.id, {}).get('state') == 'awaiting_comment')
 async def handle_comment(message: types.Message):
     user_id = message.from_user.id
-    project = timers[user_id]['project']
-    formatted_time = timers[user_id]['formatted_time']
+    project = user_timers[user_id]['project']
+    formatted_time = user_timers[user_id]['formatted_time']
     current_date = datetime.now().strftime("%d.%m.%y")
     comment = message.text
 
-    # Записываем данные в Google Spreadsheet
-    sheet.append_row([current_date, formatted_time, project, comment])
+    try:
+        # Записываем данные в Google Spreadsheet
+        sheet.append_row([current_date, formatted_time, project, comment])
 
-    # Создаем кнопку для команды /start
-    start_button = KeyboardButton(text="Start Over")
-    start_keyboard = ReplyKeyboardMarkup(keyboard=[[start_button]], resize_keyboard=True)
+        # Возвращаемся в состояние выбора проекта
+        user_timers[user_id] = {'state': 'selecting_project'}
 
-    # Сообщаем об успешной записи и меняем клавиатуру на кнопку /start
-    await message.answer(
-        f"Данные отправлены в Google Spreadsheet!\nПроект: {project}\nВремя: {formatted_time}\nКомментарий: {comment}",
-        reply_markup=start_keyboard
-    )
+        # Выводим сообщение и предлагаем выбрать проект или добавить новый
+        buttons = [[KeyboardButton(text=project) for project in user_projects[user_id]], [KeyboardButton(text="Новый проект")]]
+        keyboard = ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
-    # Убираем данные пользователя
-    del timers[user_id]
+        await message.answer(
+            f"Данные отправлены в Google Spreadsheet!\nПроект: {project}\nВремя: {formatted_time}\nКомментарий: {comment}\nВыбери следующий проект или добавь новый:",
+            reply_markup=keyboard
+        )
+
+    except Exception as e:
+        # Обработка ошибки при отправке комментария
+        await message.answer("Ошибка при попытке отправить данные на сервер. Связь с сервером прервалась.")
+        print(f"Ошибка: {e}")
 
 # Запуск бота
 async def main():
