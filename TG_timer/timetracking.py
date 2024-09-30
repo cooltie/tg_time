@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 import gspread
 import os
 import json
@@ -13,7 +13,7 @@ from env import API_TOKEN, SPREADSHEET_ID
 # Авторизация в Google Sheets API
 scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
 
-is_local = os.getenv("IS_LOCAL", "true") == "false"
+is_local = os.getenv("IS_LOCAL", "true") == "true"
 
 if is_local:
     json_keyfile_path = "/Users/nikayc/Dropbox/Projects/pythonProject/keys" \
@@ -88,6 +88,58 @@ async def request_new_project(message: types.Message):
     user_id = message.from_user.id
     user_timers[user_id] = {'state': 'awaiting_new_project'}
     await message.answer("Введи название нового проекта:", reply_markup=types.ReplyKeyboardRemove())
+
+@dp.message(Command('stats'))
+async def show_stats_menu(message: types.Message):
+    # Создаем кнопки для выбора статистики
+    buttons = [
+        [KeyboardButton(text="За день")],
+        [KeyboardButton(text="За неделю")],
+        [KeyboardButton(text="За месяц")]
+    ]
+    keyboard = ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
+
+    # Отправляем сообщение с выбором
+    await message.answer("Выбери период статистики:", reply_markup=keyboard)
+
+# Обработка кнопки "За день"
+@dp.message(lambda message: message.text == "За день")
+async def stats_for_day(message: types.Message):
+    today = datetime.now().strftime("%d.%m.%y")
+    projects_data = get_project_data_for_period('day')  # Функция для получения данных за день
+    response = format_stats_response(projects_data, today, "Всего за сегодня")
+    await message.answer(response)
+
+# Обработка кнопки "За неделю"
+@dp.message(lambda message: message.text == "За неделю")
+async def stats_for_week(message: types.Message):
+    start_of_week = (datetime.now() - timedelta(days=datetime.now().weekday())).strftime("%d.%m.%y")
+    today = datetime.now().strftime("%d.%m.%y")
+    projects_data = get_project_data_for_period('week')  # Функция для получения данных за неделю
+    response = format_stats_response(projects_data, f"{start_of_week} - {today}", "Всего за неделю")
+    await message.answer(response)
+
+# Обработка кнопки "За месяц"
+@dp.message(lambda message: message.text == "За месяц")
+async def stats_for_month(message: types.Message):
+    start_of_month = datetime.now().replace(day=1).strftime("%d.%m.%y")
+    today = datetime.now().strftime("%d.%m.%y")
+    projects_data = get_project_data_for_period('month')  # Функция для получения данных за месяц
+    response = format_stats_response(projects_data, f"{start_of_month} - {today}", "Всего за месяц")
+    await message.answer(response)
+
+# Функция для получения данных за указанный период
+def get_project_data_for_period(period):
+    # Реализуйте логику для получения данных из Google Spreadsheet за указанный период
+    pass
+
+# Функция для форматирования ответа
+def format_stats_response(projects_data, date_range, total_label):
+    response = ""
+    for project, total_time in projects_data.items():
+        response += f"<b>{project}</b>\n{date_range}\n{total_label}: {total_time}\n\n"
+    return response
+
 
 # Функция для обработки команды "Стоп"
 @dp.message(lambda message: message.text == "Стоп" and user_timers.get(message.from_user.id, {}).get('state') == 'running')
