@@ -1,30 +1,53 @@
 import asyncio
+import asyncpg
+from asyncpg import create_pool
 from datetime import datetime, timedelta
-import gspread
-import os
-import json
-from oauth2client.service_account import ServiceAccountCredentials
+import logging
+logging.basicConfig(level=logging.INFO)
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from env import API_TOKEN, host, port, user, password, dbname
 
-from env import API_TOKEN, SPREADSHEET_ID
 
-# Авторизация в Google Sheets API
-scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+async def save_time_entry(user_id, project_name, start_time, end_time, duration, comment):
+    conn = await asyncpg.connect(
+        user=user,
+        password=password,
+        database=dbname,
+        host=host.split('@')[-1].split(':')[0],
+        port=port
+    )
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id SERIAL PRIMARY KEY,
+            telegram_id BIGINT UNIQUE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS projects (
+            id SERIAL PRIMARY KEY,
+            user_id INT REFERENCES users(id) ON DELETE CASCADE,
+            project_name TEXT,
+            project_id INT REFERENCES projects(id) ON DELETE CASCADE,
+            entry_datetime TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            start_time TIMESTAMP,
+            end_time TIMESTAMP,
+            duration INTERVAL,
+            comment TEXT
+        )
+    """)
+    await conn.execute("""
+            INSERT INTO projects (user_id, project_name, start_time, end_time, duration, comment)
+            VALUES ($1, $2, $3, $4, $5, $6)
+        """, user_id, project_name, start_time, end_time, duration, comment)
 
-is_local = os.getenv("IS_LOCAL", "true") == "true"
+    ("""
+            INSERT INTO users (telegram_id, username)
+            VALUES ($1, $2)
+            ON CONFLICT (telegram_id) DO NOTHING
+        """, telegram_id)
+    await conn.close()
 
-if is_local:
-    json_keyfile_path = "/Users/nikayc/Dropbox/Projects/pythonProject/keys" \
-                        "/timetracking-436217-8f446dc303b1.json"
-    creds = ServiceAccountCredentials.from_json_keyfile_name(json_keyfile_path, scope)
-else:
-    json_keyfile = os.environ.get('GOOGLE_SHEETS_KEY_JSON')
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(json.loads(json_keyfile), scope)
-
-client = gspread.authorize(creds)
-sheet = client.open_by_key(SPREADSHEET_ID).sheet1  # Открываем первую страницу таблицы
 
 # Создаем объекты бота и диспетчера
 bot = Bot(token=API_TOKEN)
@@ -44,7 +67,7 @@ async def cmd_start(message: types.Message):
         user_timers[user_id] = {'state': 'awaiting_new_project'}
         await message.answer("Введи название нового проекта:", reply_markup=types.ReplyKeyboardRemove())
     else:
-        buttons = [[KeyboardButton(text=project) for project in user_projects[user_id]], [KeyboardButton(text="Новый проект")]]
+        buttons = [[KeyboardButton(text=project_name) for project_name in user_projects[user_id]], [KeyboardButton(text="Новый проект")]]
         keyboard = ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
         user_timers[user_id] = {'state': 'selecting_project'}
         await message.answer("Выбери проект или добавь новый:", reply_markup=keyboard)
@@ -172,32 +195,37 @@ async def cmd_stop(message: types.Message):
             user_timers[user_id] = {
                 'project': user_timers[user_id]['project'],
                 'formatted_time': formatted_time,
-                'state': 'error',  # В случае ошибки устанавливаем состояние 'error'
-                'error_time': datetime.now()  # Фиксируем время возникновения ошибки
+                'state': 'error',  # В случае ошибки устанавливаем состояние
+            #                'error'
+                'error_time': datetime.now()  # Фиксируем время
+            #                возникновения ошибки
             }
 
 # Обработка комментария
 @dp.message(lambda message: user_timers.get(message.from_user.id, {}).get('state') == 'awaiting_comment')
 async def handle_comment(message: types.Message):
     user_id = message.from_user.id
-    project = user_timers[user_id]['project']
+    project_name = user_timers[user_id]['project']
     formatted_time = user_timers[user_id]['formatted_time']
     current_date = datetime.now().strftime("%d.%m.%y")
     comment = message.text
 
-    try:
-        # Записываем данные в Google Spreadsheet
-        sheet.append_row([current_date, formatted_time, project, comment])
+    start_time = user_timers[user_id]['start_time']
+    end_time = datetime.now()
 
+    duration = end_time - start_time
+    await save_time_entry(user_id, project_name, start_time, end_time, duration, comment)
+
+    try:
         # Возвращаемся в состояние выбора проекта
         user_timers[user_id] = {'state': 'selecting_project'}
 
         # Выводим сообщение и предлагаем выбрать проект или добавить новый
-        buttons = [[KeyboardButton(text=project) for project in user_projects[user_id]], [KeyboardButton(text="Новый проект")]]
+        buttons = [[KeyboardButton(text=project_name) for project_name in user_projects[user_id]], [KeyboardButton(text="Новый проект")]]
         keyboard = ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
         await message.answer(
-            f"Данные отправлены в Google Spreadsheet!\nПроект: {project}\nВремя: {formatted_time}\nКомментарий: {comment}\nВыбери следующий проект или добавь новый:",
+            f"Ура, данные сохранены! \nПроект: {project_name} занял: {formatted_time}\nКомментарий: {comment}\nВыбери следующий проект или добавь новый:",
             reply_markup=keyboard
         )
 
@@ -208,6 +236,19 @@ async def handle_comment(message: types.Message):
 
 # Запуск бота
 async def main():
+    db = await create_pool(
+        user=user,
+        password=password,
+        database=dbname,
+        host=host.split('@')[-1].split(':')[0],
+        port=port
+    )
+
+    # Получаем название базы данных
+    async with db.acquire() as connection:
+        db_name = await connection.fetchval("SELECT current_database()")
+        print(f"Подключение установлено к базе данных: {db_name}")
+
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
