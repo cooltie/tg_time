@@ -1,5 +1,9 @@
 # env.py
 
-API_TOKEN = '6440852984:AAHeD_6Ya6xdI-2DGAuVe4dKhKqu-BEw_rQ'
+API_TOKEN = '7769254890:AAHKxCtnL7qg3goFCKQCshZNfBDSmqs1hfg'
 
-SPREADSHEET_ID = '1D1QCbveZEJHjhERzPIC4_uEzbhV1DZccPo6RqjbdMso'
+host = 'autorack.proxy.rlwy.net'
+port = 10640
+user = 'postgres'
+password = 'hyVXfFkzmYprlsUDepRqanCsiNZeuWsu'
+dbname = 'railway'
