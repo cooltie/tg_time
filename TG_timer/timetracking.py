@@ -10,7 +10,7 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from env import API_TOKEN, host, port, user, password, dbname
 
 
-async def save_time_entry(user_id, project_name, start_time, end_time, duration, comment):
+async def save_time_entry(user_id, telegram_id, project_name, start_time, end_time, duration, comment):
     conn = await asyncpg.connect(
         user=user,
         password=password,
@@ -21,33 +21,36 @@ async def save_time_entry(user_id, project_name, start_time, end_time, duration,
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id SERIAL PRIMARY KEY,
-            telegram_id BIGINT UNIQUE,
+            telegram_id BIGINT UNIQUE NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         CREATE TABLE IF NOT EXISTS projects (
             id SERIAL PRIMARY KEY,
-            user_id INT REFERENCES users(id) ON DELETE CASCADE,
-            project_name TEXT,
-            project_id INT REFERENCES projects(id) ON DELETE CASCADE,
-            entry_datetime TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            user_id INT REFERENCES users(id) ON DELETE CASCADE NOT NULL,
+            project_name TEXT NOT NULL,
             start_time TIMESTAMP,
             end_time TIMESTAMP,
             duration INTERVAL,
             comment TEXT
-        )
+        );
     """)
+
     await conn.execute("""
-            INSERT INTO projects (user_id, project_name, start_time, end_time, duration, comment)
-            VALUES ($1, $2, $3, $4, $5, $6)
-        """, user_id, project_name, start_time, end_time, duration, comment)
+        INSERT INTO users (telegram_id) 
+        VALUES ($1) 
+        ON CONFLICT (telegram_id) DO NOTHING
+    """, telegram_id)
 
-    ("""
-            INSERT INTO users (telegram_id, username)
-            VALUES ($1, $2)
-            ON CONFLICT (telegram_id) DO NOTHING
-        """, telegram_id)
+    user_id = await conn.fetchval("""
+        SELECT id FROM users WHERE telegram_id = $1
+    """, telegram_id)
+
+    await conn.execute("""
+        INSERT INTO projects (user_id, project_name, start_time, end_time, duration, comment)
+        VALUES ($1, $2, $3, $4, $5, $6)
+    """, user_id, project_name, start_time, end_time, duration, comment)
+
     await conn.close()
-
 
 # Создаем объекты бота и диспетчера
 bot = Bot(token=API_TOKEN)
@@ -112,57 +115,6 @@ async def request_new_project(message: types.Message):
     user_timers[user_id] = {'state': 'awaiting_new_project'}
     await message.answer("Введи название нового проекта:", reply_markup=types.ReplyKeyboardRemove())
 
-@dp.message(Command('stats'))
-async def show_stats_menu(message: types.Message):
-    # Создаем кнопки для выбора статистики
-    buttons = [
-        [KeyboardButton(text="За день")],
-        [KeyboardButton(text="За неделю")],
-        [KeyboardButton(text="За месяц")]
-    ]
-    keyboard = ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
-
-    # Отправляем сообщение с выбором
-    await message.answer("Выбери период статистики:", reply_markup=keyboard)
-
-# Обработка кнопки "За день"
-@dp.message(lambda message: message.text == "За день")
-async def stats_for_day(message: types.Message):
-    today = datetime.now().strftime("%d.%m.%y")
-    projects_data = get_project_data_for_period('day')  # Функция для получения данных за день
-    response = format_stats_response(projects_data, today, "Всего за сегодня")
-    await message.answer(response)
-
-# Обработка кнопки "За неделю"
-@dp.message(lambda message: message.text == "За неделю")
-async def stats_for_week(message: types.Message):
-    start_of_week = (datetime.now() - timedelta(days=datetime.now().weekday())).strftime("%d.%m.%y")
-    today = datetime.now().strftime("%d.%m.%y")
-    projects_data = get_project_data_for_period('week')  # Функция для получения данных за неделю
-    response = format_stats_response(projects_data, f"{start_of_week} - {today}", "Всего за неделю")
-    await message.answer(response)
-
-# Обработка кнопки "За месяц"
-@dp.message(lambda message: message.text == "За месяц")
-async def stats_for_month(message: types.Message):
-    start_of_month = datetime.now().replace(day=1).strftime("%d.%m.%y")
-    today = datetime.now().strftime("%d.%m.%y")
-    projects_data = get_project_data_for_period('month')  # Функция для получения данных за месяц
-    response = format_stats_response(projects_data, f"{start_of_month} - {today}", "Всего за месяц")
-    await message.answer(response)
-
-# Функция для получения данных за указанный период
-def get_project_data_for_period(period):
-    # Реализуйте логику для получения данных из Google Spreadsheet за указанный период
-    pass
-
-# Функция для форматирования ответа
-def format_stats_response(projects_data, date_range, total_label):
-    response = ""
-    for project, total_time in projects_data.items():
-        response += f"<b>{project}</b>\n{date_range}\n{total_label}: {total_time}\n\n"
-    return response
-
 
 # Функция для обработки команды "Стоп"
 @dp.message(lambda message: message.text == "Стоп" and user_timers.get(message.from_user.id, {}).get('state') == 'running')
@@ -174,65 +126,49 @@ async def cmd_stop(message: types.Message):
         end_time = datetime.now()
         elapsed_time = end_time - start_time
 
-        # Преобразование времени в формат hh:mm
-        hours, remainder = divmod(elapsed_time.total_seconds(), 3600)
-        minutes, _ = divmod(remainder, 60)
-        formatted_time = f"{int(hours):02}:{int(minutes):02}"
-
+        # Сохраняем в user_timers время и ожидаем комментарий
+        user_timers[user_id]['end_time'] = end_time
+        user_timers[user_id]['duration'] = elapsed_time
         user_timers[user_id]['state'] = 'awaiting_comment'
-        user_timers[user_id]['formatted_time'] = formatted_time
-        try:
-            # Пробуем записать данные в Google Spreadsheet
-            await message.answer("Таймер остановлен! Введи комментарий:")
-        except Exception as e:
-            # Обработка ошибки при работе с Google Spreadsheet
-            await message.answer("Ошибка при попытке отправить данные на сервер. Связь с сервером прервалась.")
-            # Логируем ошибку (если есть логирование)
-            print(f"Ошибка: {e}")
 
-            # Фиксируем остановку таймера и сохраняем данные локально (в памяти)
-            # Можно добавить механизм повторной отправки данных позже
-            user_timers[user_id] = {
-                'project': user_timers[user_id]['project'],
-                'formatted_time': formatted_time,
-                'state': 'error',  # В случае ошибки устанавливаем состояние
-            #                'error'
-                'error_time': datetime.now()  # Фиксируем время
-            #                возникновения ошибки
-            }
+        await message.answer(
+            f"Таймер остановлен. Введи комментарий:",
+            reply_markup=types.ReplyKeyboardRemove()
+        )
 
 # Обработка комментария
 @dp.message(lambda message: user_timers.get(message.from_user.id, {}).get('state') == 'awaiting_comment')
 async def handle_comment(message: types.Message):
     user_id = message.from_user.id
+    telegram_id = message.from_user.id  # telegram_id тот же, что и user_id
     project_name = user_timers[user_id]['project']
-    formatted_time = user_timers[user_id]['formatted_time']
-    current_date = datetime.now().strftime("%d.%m.%y")
+    start_time = user_timers[user_id]['start_time']
+    end_time = user_timers[user_id]['end_time']
+    duration = user_timers[user_id]['duration']
+    elapsed_time = end_time - start_time
     comment = message.text
 
-    start_time = user_timers[user_id]['start_time']
-    end_time = datetime.now()
+   # Преобразование времени в формат hh:mm
+    hours, remainder = divmod(elapsed_time.total_seconds(), 3600)
+    minutes, _ = divmod(remainder, 60)
+    formatted_time = f"{int(hours):02}:{int(minutes):02}"
 
-    duration = end_time - start_time
-    await save_time_entry(user_id, project_name, start_time, end_time, duration, comment)
 
-    try:
-        # Возвращаемся в состояние выбора проекта
-        user_timers[user_id] = {'state': 'selecting_project'}
+    # Сохранение в БД
+    await save_time_entry(user_id, telegram_id, project_name, start_time, end_time, duration, comment)
 
-        # Выводим сообщение и предлагаем выбрать проект или добавить новый
-        buttons = [[KeyboardButton(text=project_name) for project_name in user_projects[user_id]], [KeyboardButton(text="Новый проект")]]
-        keyboard = ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
+    # Предложение выбрать проект
+    user_timers[user_id] = {'state': 'selecting_project'}
+    buttons = [[KeyboardButton(text=project_name) for project_name in user_projects[user_id]], [KeyboardButton(text="Новый проект")]]
+    keyboard = ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
-        await message.answer(
-            f"Ура, данные сохранены! \nПроект: {project_name} занял: {formatted_time}\nКомментарий: {comment}\nВыбери следующий проект или добавь новый:",
-            reply_markup=keyboard
-        )
+    await message.answer(
+        f"Комментарий: {comment}\nВремя: {formatted_time}."
+    )
+    await message.answer(
+        f"Выбери следующий проект или добавь новый.")
+    reply_markup=keyboard
 
-    except Exception as e:
-        # Обработка ошибки при отправке комментария
-        await message.answer("Ошибка при попытке отправить данные на сервер. Связь с сервером прервалась.")
-        print(f"Ошибка: {e}")
 
 # Запуск бота
 async def main():
