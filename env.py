@@ -1,6 +1,6 @@
 # env.py
 
-API_TOKEN = '7769254890:AAHyAl1OK3BlqHHe49xJkVHAmD8GFPrnRc4'
+API_TOKEN = 'ВАШ_НОВЫЙ_ТОКЕН_БОТА_ЗДЕСЬ'
 
 host = 'autorack.proxy.rlwy.net'
 port = 10640
