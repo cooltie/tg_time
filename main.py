@@ -13,23 +13,13 @@ load_dotenv()
 
 # Получение переменных окружения
 API_TOKEN = os.getenv('API_TOKEN')
-host = os.getenv('PGHOST')
-port = int(os.getenv('PGPORT'))
-user = os.getenv('PGUSER')
-password = os.getenv('PGPASSWORD')
-dbname = os.getenv('PGDATABASE')
+DATABASE_URL = os.getenv('DATABASE_URL')
 
 logging.basicConfig(level=logging.INFO)
 
 
 async def save_time_entry(user_id, telegram_id, project_name, start_time, end_time, duration, comment):
-    conn = await asyncpg.connect(
-        user=user,
-        password=password,
-        database=dbname,
-        host=host.split('@')[-1].split(':')[0],
-        port=port
-    )
+    conn = await asyncpg.connect(DATABASE_URL)
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id SERIAL PRIMARY KEY,
@@ -193,13 +183,7 @@ async def handle_comment(message: types.Message):
 
 # Запуск бота
 async def main():
-    db = await asyncpg.create_pool(
-        user=user,
-        password=password,
-        database=dbname,
-        host=host.split('@')[-1].split(':')[0],
-        port=port
-    )
+    db = await asyncpg.create_pool(DATABASE_URL)
 
     # Получаем название базы данных
     async with db.acquire() as connection:

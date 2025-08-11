@@ -1,6 +1,5 @@
 # Environment files
-env.py
-.env
+.env.py
 
 # Cache directories
 .mypy_cache/
