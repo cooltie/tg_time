@@ -13,11 +13,11 @@ load_dotenv()
 
 # Получение переменных окружения
 API_TOKEN = os.getenv('API_TOKEN')
-host = os.getenv('DB_HOST', 'localhost')
-port = int(os.getenv('DB_PORT', '5432'))
-user = os.getenv('DB_USER', 'postgres')
-password = os.getenv('DB_PASSWORD', '')
-dbname = os.getenv('DB_NAME', 'postgres')
+host = os.getenv('PGHOST')
+port = int(os.getenv('PGPORT'))
+user = os.getenv('PGUSER')
+password = os.getenv('PGPASSWORD')
+dbname = os.getenv('PGDATABASE')
 
 logging.basicConfig(level=logging.INFO)
 
