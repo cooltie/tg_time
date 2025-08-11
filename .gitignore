@@ -1,9 +1,0 @@
-/Users/nikayc/Dropbox/Projects/pythonProject/keys/
-add.py
-aiogram_bot.py
-# Игнорировать системные файлы
-.DS_Store
-Thumbs.db
-
-# Игнорировать настройки IDE
-.idea/
