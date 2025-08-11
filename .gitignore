@@ -1,2 +1,5 @@
 env.py
 .mypy_cache/
+__pycache__/
+run_tests.py
+test_main.py

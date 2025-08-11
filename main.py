@@ -7,14 +7,16 @@ from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 import asyncpg
 
-# Get values from environment variables or use defaults
-
-API_TOKEN = os.getenv('API_TOKEN', 'your_default_token_here')
-host = os.getenv('DB_HOST', 'localhost')
-port = int(os.getenv('DB_PORT', '5432'))
-user = os.getenv('DB_USER', 'postgres')
-password = os.getenv('DB_PASSWORD', '')
-dbname = os.getenv('DB_NAME', 'postgres')
+# Try to import from env.py first, fallback to environment variables
+try:
+    from env import API_TOKEN, host, port, user, password, dbname
+except ImportError:
+    API_TOKEN = os.getenv('API_TOKEN')
+    host = os.getenv('DB_HOST')
+    port = int(os.getenv('DB_PORT'))
+    user = os.getenv('DB_USER')
+    password = os.getenv('DB_PASSWORD')
+    dbname = os.getenv('DB_NAME')
 
 logging.basicConfig(level=logging.INFO)
 
