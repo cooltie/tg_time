@@ -162,9 +162,9 @@ def validate_date_format(date_text):
     match = re.match(pattern, date_text.strip())
     if not match:
         return None
-    
+
     day, month, year = map(int, match.groups())
-    
+
     # Проверяем корректность даты
     try:
         # Год 20XX
@@ -181,50 +181,50 @@ def validate_time_format(time_text):
     match = re.match(pattern, time_text.strip())
     if not match:
         return None
-    
+
     hours, minutes = map(int, match.groups())
-    
+
     if hours < 0 or hours > 23 or minutes < 0 or minutes > 59:
         return None
-    
+
     return hours * 3600 + minutes * 60  # возвращаем секунды
 
 
 async def save_manual_entry(user_id, message):
     """Сохраняет ручную запись времени"""
     timer_data = user_timers.get(user_id, {})
-    
+
     project_name = timer_data.get('manual_project')
     manual_date = timer_data.get('manual_date')
     manual_duration_seconds = timer_data.get('manual_duration_seconds')
     manual_comment = timer_data.get('manual_comment')
-    
+
     if not all([project_name, manual_date, manual_duration_seconds, manual_comment]):
         await message.edit_text("❌ Ошибка: не все данные заполнены.")
         return
-    
+
     # Создаем start_time и end_time
     start_time = manual_date
     duration_td = timedelta(seconds=manual_duration_seconds)
     end_time = start_time + duration_td
-    
+
     # Сохраняем в БД
     await save_time_entry(user_id, user_id, project_name, start_time, end_time, duration_td, manual_comment)
-    
+
     # Обновляем локальный кэш проектов
     if user_id not in user_projects:
         user_projects[user_id] = []
     if project_name not in user_projects[user_id]:
         user_projects[user_id].append(project_name)
-    
+
     # Очищаем состояние
     user_timers[user_id] = {'state': 'idle'}
-    
+
     # Форматируем время для отображения
     hours, remainder = divmod(manual_duration_seconds, 3600)
     minutes, _ = divmod(remainder, 60)
     time_str = f"{int(hours):02}:{int(minutes):02}"
-    
+
     await message.edit_text(f"✅ Запись сохранена!\n\n"
                            f"Проект: {project_name}\n"
                            f"Дата: {manual_date.strftime('%d.%m.%Y')}\n"
@@ -280,10 +280,10 @@ user_projects = {}  # Хранение проектов для каждого п
 @dp.message(Command('manual'))
 async def cmd_manual(message: types.Message):
     user_id = message.from_user.id
-    
+
     # Получаем проекты пользователя из БД
     projects = await get_user_projects(user_id)
-    
+
     if not projects:
         # Если проектов нет, предлагаем создать новый
         user_timers[user_id] = {'state': 'manual_awaiting_new_project'}
@@ -294,7 +294,7 @@ async def cmd_manual(message: types.Message):
         for project_name in projects:
             buttons.append([InlineKeyboardButton(text=project_name, callback_data=f"manual_project:{project_name}")])
         buttons.append([InlineKeyboardButton(text="Добавить новый", callback_data="manual_new_project")])
-        
+
         keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
         await message.answer("Выберите проект для ручного добавления времени:", reply_markup=keyboard)
 
@@ -461,9 +461,9 @@ async def handle_callback(callback: types.CallbackQuery):
                     day_time = f"{int(day_hours):02}:{int(day_minutes):02}"
 
                     message += f"• {date}: {day_time} ({sessions} сессий)\n"
-            
+
             await callback.message.edit_text(message)
-    
+
     elif callback.data.startswith("manual_project:"):
         # Ручное добавление для существующего проекта
         project_name = callback.data.replace("manual_project:", "")
@@ -472,16 +472,16 @@ async def handle_callback(callback: types.CallbackQuery):
             'manual_project': project_name
         }
         await callback.message.edit_text(f"Проект: {project_name}\n\nВведите дату в формате ДД ММ ГГ (например: 15 08 24):")
-    
+
     elif callback.data == "manual_new_project":
         # Создание нового проекта для ручного добавления
         user_timers[user_id] = {'state': 'manual_awaiting_new_project'}
         await callback.message.edit_text("Введите название нового проекта:")
-    
+
     elif callback.data == "manual_save":
         # Сохранение ручной записи
         await save_manual_entry(user_id, callback.message)
-    
+
     await callback.answer()
 
 
@@ -548,16 +548,16 @@ async def handle_manual_new_project(message: types.Message):
 async def handle_manual_date(message: types.Message):
     user_id = message.from_user.id
     date_text = message.text.strip()
-    
+
     parsed_date = validate_date_format(date_text)
     if not parsed_date:
         await message.answer("❌ Неверный формат даты. Используйте формат ДД ММ ГГ (например: 15 08 24):")
         return
-    
+
     # Сохраняем дату и переходим к вводу времени
     user_timers[user_id]['manual_date'] = parsed_date
     user_timers[user_id]['state'] = 'manual_awaiting_time'
-    
+
     await message.answer(f"Дата: {parsed_date.strftime('%d.%m.%Y')}\n\nВведите количество затраченных часов в формате ЧЧ:ММ (например: 02:30):")
 
 
@@ -565,16 +565,16 @@ async def handle_manual_date(message: types.Message):
 async def handle_manual_time(message: types.Message):
     user_id = message.from_user.id
     time_text = message.text.strip()
-    
+
     duration_seconds = validate_time_format(time_text)
     if duration_seconds is None:
         await message.answer("❌ Неверный формат времени. Используйте формат ЧЧ:ММ (например: 02:30):")
         return
-    
+
     # Сохраняем время и переходим к вводу комментария
     user_timers[user_id]['manual_duration_seconds'] = duration_seconds
     user_timers[user_id]['state'] = 'manual_awaiting_comment'
-    
+
     await message.answer(f"Время: {time_text}\n\nВведите комментарий:")
 
 
@@ -582,24 +582,24 @@ async def handle_manual_time(message: types.Message):
 async def handle_manual_comment(message: types.Message):
     user_id = message.from_user.id
     comment = message.text.strip()
-    
+
     # Сохраняем комментарий
     user_timers[user_id]['manual_comment'] = comment
     user_timers[user_id]['state'] = 'manual_ready_to_save'
-    
+
     # Показываем сводку и кнопку сохранения
     timer_data = user_timers[user_id]
     project_name = timer_data['manual_project']
     manual_date = timer_data['manual_date']
     duration_seconds = timer_data['manual_duration_seconds']
-    
+
     hours, remainder = divmod(duration_seconds, 3600)
     minutes, _ = divmod(remainder, 60)
     time_str = f"{int(hours):02}:{int(minutes):02}"
-    
+
     buttons = [[InlineKeyboardButton(text="💾 Сохранить", callback_data="manual_save")]]
     keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
-    
+
     await message.answer(
         f"📋 Проверьте данные:\n\n"
         f"Проект: {project_name}\n"
