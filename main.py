@@ -190,7 +190,7 @@ async def handle_comment(message: types.Message):
 
 # Запуск бота
 async def main():
-    db = await create_pool(
+    db = await asyncpg.create_pool(
         user=user,
         password=password,
         database=dbname,
