@@ -1,11 +1,20 @@
 import asyncio
+import logging
+import os
 from datetime import datetime
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 import asyncpg
-from env import API_TOKEN, host, port, user, password, dbname
-import logging
+
+# Get values from environment variables or use defaults
+
+API_TOKEN = os.getenv('API_TOKEN', 'your_default_token_here')
+host = os.getenv('DB_HOST', 'localhost')
+port = int(os.getenv('DB_PORT', '5432'))
+user = os.getenv('DB_USER', 'postgres')
+password = os.getenv('DB_PASSWORD', '')
+dbname = os.getenv('DB_NAME', 'postgres')
 
 logging.basicConfig(level=logging.INFO)
 
@@ -68,12 +77,21 @@ async def cmd_start(message: types.Message):
     # Если у пользователя нет проектов
     if user_id not in user_projects or not user_projects[user_id]:
         user_timers[user_id] = {'state': 'awaiting_new_project'}
-        await message.answer("Введи название нового проекта:", reply_markup=types.ReplyKeyboardRemove())
+        await message.answer(
+            "Введи название нового проекта:",
+            reply_markup=types.ReplyKeyboardRemove()
+        )
     else:
-        buttons = [[KeyboardButton(text=project_name) for project_name in user_projects[user_id]], [KeyboardButton(text="Новый проект")]]
+        buttons = [
+            [KeyboardButton(text=project_name) for project_name in user_projects[user_id]],
+            [KeyboardButton(text="Новый проект")]
+        ]
         keyboard = ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
         user_timers[user_id] = {'state': 'selecting_project'}
-        await message.answer("Выбери проект или добавь новый:", reply_markup=keyboard)
+        await message.answer(
+            "Выбери проект или добавь новый:",
+            reply_markup=keyboard
+        )
 
 # Функция для обработки ввода названия нового проекта
 @dp.message(lambda message: user_timers.get(message.from_user.id, {}).get('state') == 'awaiting_new_project')
