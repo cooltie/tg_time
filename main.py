@@ -19,8 +19,8 @@ DATABASE_URL = os.getenv('DATABASE_URL')
 logging.basicConfig(level=logging.INFO)
 
 
-async def get_user_projects(telegram_id):
-    """Получает список уникальных проектов пользователя из БД"""
+async def check_user_exists(telegram_id):
+    """Проверяет, существует ли пользователь в БД"""
     conn = await asyncpg.connect(DATABASE_URL)
 
     # Создаем таблицы если их нет
@@ -40,6 +40,25 @@ async def get_user_projects(telegram_id):
             comment TEXT
         );
     """)
+
+    # Проверяем существование пользователя
+    user_exists = await conn.fetchval("""
+        SELECT EXISTS(SELECT 1 FROM users WHERE telegram_id = $1)
+    """, telegram_id)
+
+    # Если пользователя нет, создаем его
+    if not user_exists:
+        await conn.execute("""
+            INSERT INTO users (telegram_id) VALUES ($1)
+        """, telegram_id)
+
+    await conn.close()
+    return user_exists
+
+
+async def get_user_projects(telegram_id):
+    """Получает список уникальных проектов пользователя из БД"""
+    conn = await asyncpg.connect(DATABASE_URL)
 
     # Получаем уникальные проекты пользователя
     projects = await conn.fetch("""
@@ -229,7 +248,7 @@ async def save_manual_entry(user_id, message):
                            f"Проект: {project_name}\n"
                            f"Дата: {manual_date.strftime('%d.%m.%Y')}\n"
                            f"Время: {time_str}\n"
-                           f"Комментарий: {manual_comment}")
+                           f"Что делал/а: {manual_comment}")
 
 
 async def save_time_entry(user_id, telegram_id, project_name, start_time, end_time, duration, comment):
@@ -287,7 +306,7 @@ async def cmd_manual(message: types.Message):
     if not projects:
         # Если проектов нет, предлагаем создать новый
         user_timers[user_id] = {'state': 'manual_awaiting_new_project'}
-        await message.answer("У вас пока нет проектов. Введите название нового проекта:")
+        await message.answer("У тебя пока нет проектов. Введи название нового проекта:")
     else:
         # Показываем список проектов + кнопка добавить новый
         buttons = []
@@ -316,6 +335,23 @@ async def cmd_stats(message: types.Message):
 async def cmd_start(message: types.Message):
     user_id = message.from_user.id
 
+    # Проверяем, новый ли это пользователь
+    user_exists = await check_user_exists(user_id)
+
+    # Если пользователь новый, показываем приветствие
+    if not user_exists:
+        await message.answer(
+            "Привет! 👋\n"
+            "Приложение предложит ввести название проекта 📝, а потом сразу запустит таймер — он будет фиксировать время, которое ты тратишь на проект.\n\n"
+            "В меню ты сможешь:\n"
+            "	•	посмотреть статистику по своим проектам 📊\n"
+            "	•	вручную добавить время, если работал без таймера ⌛"
+        )
+
+        # Показываем typing эффект на 5 секунд
+        await bot.send_chat_action(chat_id=message.chat.id, action="typing")
+        await asyncio.sleep(5)
+
     # Получаем проекты пользователя из БД
     projects = await get_user_projects(user_id)
 
@@ -326,7 +362,7 @@ async def cmd_start(message: types.Message):
     if not projects:
         user_timers[user_id] = {'state': 'awaiting_new_project'}
         await message.answer(
-            "Введи название нового проекта:",
+            "У тебя пока нет проектов. Введи название нового проекта:",
             reply_markup=types.ReplyKeyboardRemove()
         )
     else:
@@ -396,7 +432,7 @@ async def handle_callback(callback: types.CallbackQuery):
             user_timers[user_id]['duration'] = elapsed_time
             user_timers[user_id]['state'] = 'awaiting_comment'
 
-            await callback.message.edit_text("Таймер остановлен. Введи комментарий:")
+            await callback.message.edit_text("Таймер остановлен. Опиши, что делал/а:")
 
     elif callback.data.startswith("stats:"):
         # Обработка статистики
@@ -471,12 +507,12 @@ async def handle_callback(callback: types.CallbackQuery):
             'state': 'manual_awaiting_date',
             'manual_project': project_name
         }
-        await callback.message.edit_text(f"Проект: {project_name}\n\nВведите дату в формате ДД ММ ГГ (например: 15 08 24):")
+        await callback.message.edit_text(f"Проект: {project_name}\n\nВведи дату в формате ДД ММ ГГ (например: 15 08 24):")
 
     elif callback.data == "manual_new_project":
         # Создание нового проекта для ручного добавления
         user_timers[user_id] = {'state': 'manual_awaiting_new_project'}
-        await callback.message.edit_text("Введите название нового проекта:")
+        await callback.message.edit_text("Введи название нового проекта:")
 
     elif callback.data == "manual_save":
         # Сохранение ручной записи
@@ -516,7 +552,7 @@ async def handle_comment(message: types.Message):
     keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
 
     await message.answer(
-        f"Комментарий: {comment}\nВремя: {formatted_time}."
+        f"что делал/а: {comment}\nВремя: {formatted_time}."
     )
     await message.answer(
         "Выбери следующий проект или добавь новый:",
@@ -541,7 +577,7 @@ async def handle_manual_new_project(message: types.Message):
             'state': 'manual_awaiting_date',
             'manual_project': project_name
         }
-        await message.answer(f"Проект: {project_name}\n\nВведите дату в формате ДД ММ ГГ (например: 15 08 24):")
+        await message.answer(f"Проект: {project_name}\n\nВведи дату в формате ДД ММ ГГ (например: 15 08 24):")
 
 
 @dp.message(lambda message: user_timers.get(message.from_user.id, {}).get('state') == 'manual_awaiting_date')
@@ -575,7 +611,7 @@ async def handle_manual_time(message: types.Message):
     user_timers[user_id]['manual_duration_seconds'] = duration_seconds
     user_timers[user_id]['state'] = 'manual_awaiting_comment'
 
-    await message.answer(f"Время: {time_text}\n\nВведите комментарий:")
+    await message.answer(f"Время: {time_text}\n\nНапиши, что делал/а:")
 
 
 @dp.message(lambda message: user_timers.get(message.from_user.id, {}).get('state') == 'manual_awaiting_comment')
@@ -605,7 +641,7 @@ async def handle_manual_comment(message: types.Message):
         f"Проект: {project_name}\n"
         f"Дата: {manual_date.strftime('%d.%m.%Y')}\n"
         f"Время: {time_str}\n"
-        f"Комментарий: {comment}\n\n"
+        f"Что делал/а: {comment}\n\n"
         f"Нажмите 'Сохранить' для подтверждения:",
         reply_markup=keyboard
     )
