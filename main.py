@@ -8,6 +8,7 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import asyncpg
 from dotenv import load_dotenv
 import re
+from collections import defaultdict
 
 # Загрузка данных из .env
 load_dotenv()
@@ -74,72 +75,244 @@ async def get_user_projects(telegram_id):
 
 
 async def get_stats_for_period(telegram_id, days=None):
-    """Получает статистику пользователя за определенный период"""
+    """Получает статистику пользователя за период: сессии по проектам"""
     conn = await asyncpg.connect(DATABASE_URL)
 
     if days:
-        # Статистика за последние N дней
-        stats = await conn.fetch(f"""
+        rows = await conn.fetch(
+            """
             SELECT
                 p.project_name,
-                COUNT(*) as sessions_count,
-                SUM(EXTRACT(EPOCH FROM p.duration)) as total_seconds
+                p.start_time,
+                EXTRACT(EPOCH FROM p.duration) AS seconds,
+                p.comment
             FROM projects p
             JOIN users u ON p.user_id = u.id
             WHERE u.telegram_id = $1
-                AND p.start_time >= NOW() - INTERVAL '{days} days'
-                AND p.duration IS NOT NULL
-            GROUP BY p.project_name
-            ORDER BY total_seconds DESC
-        """, telegram_id)
+              AND p.start_time >= NOW() - make_interval(days => $2::int)
+              AND p.duration IS NOT NULL
+            ORDER BY p.start_time DESC
+            """,
+            telegram_id,
+            days,
+        )
     else:
-        # Статистика за все время
-        stats = await conn.fetch("""
+        rows = await conn.fetch(
+            """
             SELECT
                 p.project_name,
-                COUNT(*) as sessions_count,
-                SUM(EXTRACT(EPOCH FROM p.duration)) as total_seconds
+                p.start_time,
+                EXTRACT(EPOCH FROM p.duration) AS seconds,
+                p.comment
             FROM projects p
             JOIN users u ON p.user_id = u.id
             WHERE u.telegram_id = $1
-                AND p.duration IS NOT NULL
-            GROUP BY p.project_name
-            ORDER BY total_seconds DESC
-        """, telegram_id)
+              AND p.duration IS NOT NULL
+            ORDER BY p.start_time DESC
+            """,
+            telegram_id,
+        )
 
     await conn.close()
+
+    stats = {}
+    for r in rows:
+        name = r["project_name"]
+        session = {
+            "seconds": int(r["seconds"] or 0),
+            "comment": r["comment"] or "",
+            "start_time": r["start_time"],
+        }
+        stats.setdefault(name, []).append(session)
+
     return stats
 
 
+async def get_stats_for_current_week(telegram_id):
+    """Сессии за текущую календарную неделю (пн–вс)"""
+    conn = await asyncpg.connect(DATABASE_URL)
+    rows = await conn.fetch(
+        """
+        SELECT
+            p.project_name,
+            p.start_time,
+            EXTRACT(EPOCH FROM p.duration) AS seconds,
+            p.comment
+        FROM projects p
+        JOIN users u ON p.user_id = u.id
+        WHERE u.telegram_id = $1
+          AND p.duration IS NOT NULL
+          AND p.start_time >= date_trunc('week', now())
+          AND p.start_time <  date_trunc('week', now()) + interval '7 days'
+        ORDER BY p.start_time ASC
+        """,
+        telegram_id,
+    )
+    await conn.close()
+
+    stats = {}
+    for r in rows:
+        name = r["project_name"]
+        session = {
+            "seconds": int(r["seconds"] or 0),
+            "comment": r["comment"] or "",
+            "start_time": r["start_time"],
+        }
+        stats.setdefault(name, []).append(session)
+    return stats
+
+
+async def get_stats_for_current_month(telegram_id):
+    """Сессии за текущий календарный месяц (с 1 числа)"""
+    conn = await asyncpg.connect(DATABASE_URL)
+    rows = await conn.fetch(
+        """
+        SELECT
+            p.project_name,
+            p.start_time,
+            EXTRACT(EPOCH FROM p.duration) AS seconds,
+            p.comment
+        FROM projects p
+        JOIN users u ON p.user_id = u.id
+        WHERE u.telegram_id = $1
+          AND p.duration IS NOT NULL
+          AND p.start_time >= date_trunc('month', now())
+          AND p.start_time <  date_trunc('month', now()) + interval '1 month'
+        ORDER BY p.start_time ASC
+        """,
+        telegram_id,
+    )
+    await conn.close()
+
+    stats = {}
+    for r in rows:
+        name = r["project_name"]
+        session = {
+            "seconds": int(r["seconds"] or 0),
+            "comment": r["comment"] or "",
+            "start_time": r["start_time"],
+        }
+        stats.setdefault(name, []).append(session)
+    return stats
+
 def format_stats_message(stats, period_name):
-    """Форматирует статистику в красивое сообщение"""
+    """Формат: заголовок, затем по датам: проект, итоги за период,
+    далее строки "дата/время/что делал(а)"."""
     if not stats:
         return f"📊 Статистика {period_name}\n\nДанных пока нет."
 
-    message = f"📊 Статистика {period_name}\n\n"
-    total_time = 0
+    # Итоги за период по каждому проекту
+    totals_by_project = {}
+    for project_name, sessions in stats.items():
+        total_seconds = sum(int(s.get("seconds") or 0) for s in sessions)
+        totals_by_project[project_name] = {
+            "sessions_count": len(sessions),
+            "total_seconds": int(total_seconds),
+        }
 
-    for project in stats:
-        name = project['project_name']
-        sessions = project['sessions_count']
-        seconds = project['total_seconds'] or 0
-        total_time += seconds
+    # Группировка по дате -> проект -> сессии
+    grouped = defaultdict(lambda: defaultdict(list))
+    for project_name, sessions in stats.items():
+        for s in sessions:
+            start_dt = s.get("start_time")
+            if not start_dt:
+                continue
+            date_key = start_dt.date()
+            grouped[date_key][project_name].append(s)
 
-        hours, remainder = divmod(seconds, 3600)
+    lines = [f"📊 Статистика {period_name}", ""]
+
+    for date_key in sorted(grouped.keys(), reverse=True):
+        lines.append(f"## {date_key.strftime('%d.%m.%Y')}")
+        lines.append("")
+
+        projects_for_date = grouped[date_key]
+        for project_name in sorted(projects_for_date.keys()):
+            lines.append(f"{project_name}")
+            for s in projects_for_date[project_name]:
+                seconds = int(s.get("seconds") or 0)
+                h, rem = divmod(seconds, 3600)
+                m, _ = divmod(rem, 60)
+                time_str = f"{int(h):02}:{int(m):02}"
+                sess_date = s["start_time"].strftime('%d.%m')
+                comment = s.get("comment") or "-"
+                lines.append(f"{sess_date} | {time_str} / {comment}")
+
+            lines.append("")
+
+    # Сводка по проектам за период
+    if totals_by_project:
+        lines.append("Итоги за период:")
+        lines.append("")
+        for project_name in sorted(totals_by_project.keys()):
+            totals = totals_by_project[project_name]
+            total_seconds = int(totals["total_seconds"])
+            t_hours, t_rem = divmod(total_seconds, 3600)
+            t_minutes, _ = divmod(t_rem, 60)
+            total_time_str = f"{int(t_hours):02}:{int(t_minutes):02}"
+
+            lines.append(project_name)
+            lines.append(
+                f"Всего сессий за период: {totals['sessions_count']}"
+            )
+            lines.append(
+                f"Всего времени за период: {total_time_str}"
+            )
+            lines.append("")
+
+    return "\n".join(lines).rstrip()
+
+
+def format_flat_period_stats(stats, period_name, start_date=None, end_date=None, days=None):
+    """Плоский вывод: заголовок с датами периода, далее строки
+    "ДД.ММ | ЧЧ:ММ | проект | комментарий", отсортировано по дате сессии."""
+    # Собираем все сессии в один список
+    all_sessions = []
+    for project_name, sessions in stats.items():
+        for s in sessions:
+            start_dt = s.get("start_time")
+            if not start_dt:
+                continue
+            seconds = int(s.get("seconds") or 0)
+            comment = s.get("comment") or "-"
+            all_sessions.append((start_dt, seconds, project_name, comment))
+
+    if all_sessions:
+        all_sessions.sort(key=lambda x: x[0])  # по времени возрастанию
+        calc_start = all_sessions[0][0].date()
+        calc_end = all_sessions[-1][0].date()
+    else:
+        calc_start = (datetime.now() - timedelta(days=(days or 1) - 1)).date()
+        calc_end = datetime.now().date()
+
+    header_start = (start_date or calc_start)
+    header_end = (end_date or calc_end)
+
+    lines = [
+        f"📊 Статистика {period_name} ({header_start.strftime('%d.%m.%Y')} — {header_end.strftime('%d.%m.%Y')})",
+        "",
+    ]
+
+    if not all_sessions:
+        lines.append("Данных пока нет.")
+        return "\n".join(lines)
+
+    # Суммарное время за период по всем проектам
+    total_seconds_all = sum(s[1] for s in all_sessions)
+    t_hours, t_rem = divmod(int(total_seconds_all), 3600)
+    t_minutes, _ = divmod(t_rem, 60)
+    total_time_str = f"{int(t_hours):02}:{int(t_minutes):02}"
+    lines.append(f"Всего времени за период: {total_time_str}")
+    lines.append("")
+
+    for start_dt, seconds, project_name, comment in all_sessions:
+        hours, remainder = divmod(int(seconds), 3600)
         minutes, _ = divmod(remainder, 60)
         time_str = f"{int(hours):02}:{int(minutes):02}"
+        sess_date = start_dt.strftime('%d.%m')
+        lines.append(f"{sess_date} | {time_str} | {project_name} | {comment}")
 
-        message += f"🔸 {name}\n"
-        message += f"   Время: {time_str} ({sessions} сессий)\n\n"
-
-    # Общее время
-    total_hours, remainder = divmod(total_time, 3600)
-    total_minutes, _ = divmod(remainder, 60)
-    total_time_str = f"{int(total_hours):02}:{int(total_minutes):02}"
-
-    message += f"⏱ Общее время: {total_time_str}"
-    return message
-
+    return "\n".join(lines)
 
 async def get_project_stats(telegram_id, project_name):
     """Получает детальную статистику по конкретному проекту"""
@@ -157,7 +330,6 @@ async def get_project_stats(telegram_id, project_name):
             AND p.duration IS NOT NULL
         GROUP BY DATE(p.start_time)
         ORDER BY work_date DESC
-        LIMIT 10
     """, telegram_id, project_name)
 
     total_stats = await conn.fetchrow("""
@@ -174,6 +346,27 @@ async def get_project_stats(telegram_id, project_name):
     await conn.close()
     return stats, total_stats
 
+
+async def get_project_sessions(telegram_id, project_name):
+    """Возвращает все сессии по проекту (все время)"""
+    conn = await asyncpg.connect(DATABASE_URL)
+    rows = await conn.fetch(
+        """
+        SELECT p.start_time,
+               EXTRACT(EPOCH FROM p.duration) AS seconds,
+               p.comment
+        FROM projects p
+        JOIN users u ON p.user_id = u.id
+        WHERE u.telegram_id = $1
+          AND p.project_name = $2
+          AND p.duration IS NOT NULL
+        ORDER BY p.start_time DESC
+        """,
+        telegram_id,
+        project_name,
+    )
+    await conn.close()
+    return rows
 
 def validate_date_format(date_text):
     """Валидация формата даты ДД ММ ГГ"""
@@ -244,11 +437,13 @@ async def save_manual_entry(user_id, message):
     minutes, _ = divmod(remainder, 60)
     time_str = f"{int(hours):02}:{int(minutes):02}"
 
-    await message.edit_text(f"✅ Запись сохранена!\n\n"
-                           f"Проект: {project_name}\n"
-                           f"Дата: {manual_date.strftime('%d.%m.%Y')}\n"
-                           f"Время: {time_str}\n"
-                           f"Что делал/а: {manual_comment}")
+    await message.answer(
+        f"✅ Запись сохранена!\n\n"
+        f"Проект: {project_name}\n"
+        f"Дата: {manual_date.strftime('%d.%m.%Y')}\n"
+        f"Время: {time_str}\n"
+        f"Что делала: {manual_comment}"
+    )
 
 
 async def save_time_entry(user_id, telegram_id, project_name, start_time, end_time, duration, comment):
@@ -432,20 +627,32 @@ async def handle_callback(callback: types.CallbackQuery):
             user_timers[user_id]['duration'] = elapsed_time
             user_timers[user_id]['state'] = 'awaiting_comment'
 
-            await callback.message.edit_text("Таймер остановлен. Опиши, что делал/а:")
+            await callback.message.edit_text("Таймер остановлен. Расскажи, что делала:")
 
     elif callback.data.startswith("stats:"):
         # Обработка статистики
         stats_type = callback.data.replace("stats:", "")
 
         if stats_type == "week":
-            stats = await get_stats_for_period(user_id, 7)
-            message = format_stats_message(stats, "за неделю")
+            stats = await get_stats_for_current_week(user_id)
+            # вычислим календарные границы (пн-вс) для заголовка
+            now_dt = datetime.now()
+            week_start = (now_dt - timedelta(days=now_dt.weekday())).date()
+            week_end = week_start + timedelta(days=6)
+            message = format_flat_period_stats(
+                stats, "за неделю", start_date=week_start, end_date=week_end
+            )
             await callback.message.edit_text(message)
 
         elif stats_type == "month":
-            stats = await get_stats_for_period(user_id, 30)
-            message = format_stats_message(stats, "за месяц")
+            stats = await get_stats_for_current_month(user_id)
+            now_dt = datetime.now()
+            month_start = datetime(now_dt.year, now_dt.month, 1).date()
+            # до текущей даты включительно
+            month_end = now_dt.date()
+            message = format_flat_period_stats(
+                stats, "за месяц", start_date=month_start, end_date=month_end
+            )
             await callback.message.edit_text(message)
 
         elif stats_type == "project":
@@ -470,6 +677,7 @@ async def handle_callback(callback: types.CallbackQuery):
         # Статистика по конкретному проекту
         project_name = callback.data.replace("project_stats:", "")
         daily_stats, total_stats = await get_project_stats(user_id, project_name)
+        sessions_rows = await get_project_sessions(user_id, project_name)
 
         if not total_stats or not total_stats['total_seconds']:
             await callback.message.edit_text(f"📊 Проект: {project_name}\n\nДанных пока нет.")
@@ -481,22 +689,20 @@ async def handle_callback(callback: types.CallbackQuery):
             minutes, _ = divmod(remainder, 60)
             total_time_str = f"{int(hours):02}:{int(minutes):02}"
 
-            message = f"📊 Проект: {project_name}\n\n"
-            message += f"⏱ Общее время: {total_time_str}\n"
-            message += f"📋 Всего сессий: {total_sessions}\n\n"
+            message = f"За все время: {project_name}\n"
+            message += f"Всего времени за период: {total_time_str}\n"
 
-            if daily_stats:
-                message += "📅 Последние 10 дней:\n"
-                for day in daily_stats:
-                    date = day['work_date'].strftime("%d.%m")
-                    sessions = day['sessions_count']
-                    seconds = day['total_seconds'] or 0
-
-                    day_hours, remainder = divmod(seconds, 3600)
-                    day_minutes, _ = divmod(remainder, 60)
-                    day_time = f"{int(day_hours):02}:{int(day_minutes):02}"
-
-                    message += f"• {date}: {day_time} ({sessions} сессий)\n"
+            if sessions_rows:
+                message += "\n🧾 Сессии:\n"
+                for r in sessions_rows:
+                    sess_dt = r['start_time']
+                    seconds = int(r['seconds'] or 0)
+                    h, rem = divmod(seconds, 3600)
+                    m, _ = divmod(rem, 60)
+                    time_str = f"{int(h):02}:{int(m):02}"
+                    sess_date = sess_dt.strftime('%d.%m')
+                    comment = r['comment'] or "-"
+                    message += f"{sess_date} | {time_str} | {comment}\n"
 
             await callback.message.edit_text(message)
 
@@ -552,7 +758,7 @@ async def handle_comment(message: types.Message):
     keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
 
     await message.answer(
-        f"что делал/а: {comment}\nВремя: {formatted_time}."
+        f"что делала: {comment}\nВремя: {formatted_time}."
     )
     await message.answer(
         "Выбери следующий проект или добавь новый:",
@@ -611,7 +817,7 @@ async def handle_manual_time(message: types.Message):
     user_timers[user_id]['manual_duration_seconds'] = duration_seconds
     user_timers[user_id]['state'] = 'manual_awaiting_comment'
 
-    await message.answer(f"Время: {time_text}\n\nНапиши, что делал/а:")
+    await message.answer(f"Время: {time_text}\n\nНапиши, что делала:")
 
 
 @dp.message(lambda message: user_timers.get(message.from_user.id, {}).get('state') == 'manual_awaiting_comment')
@@ -641,7 +847,7 @@ async def handle_manual_comment(message: types.Message):
         f"Проект: {project_name}\n"
         f"Дата: {manual_date.strftime('%d.%m.%Y')}\n"
         f"Время: {time_str}\n"
-        f"Что делал/а: {comment}\n\n"
+        f"Что делала: {comment}\n\n"
         f"Нажмите 'Сохранить' для подтверждения:",
         reply_markup=keyboard
     )
