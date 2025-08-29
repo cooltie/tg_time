@@ -490,6 +490,58 @@ dp = Dispatcher()
 user_timers = {}  # Хранение таймеров и состояния для каждого пользователя
 user_projects = {}  # Хранение проектов для каждого пользователя
 
+# Фоновые напоминалки по пользователям (user_id -> asyncio.Task)
+user_reminder_tasks = {}
+
+
+async def reminder_loop(user_id):
+    """Каждые 15 минут напоминает пользователю про активный таймер."""
+    try:
+        while True:
+            await asyncio.sleep(15)
+
+            # Если таймер уже не активен — выходим
+            if user_timers.get(user_id, {}).get('state') != 'running':
+                break
+
+            buttons = [[InlineKeyboardButton(text="⏹ Стоп", callback_data="stop_timer")]]
+            keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+            try:
+                await bot.send_message(
+                    chat_id=user_id,
+                    text="⏰ Ты ещё работаешь? Если закончил(а), нажми Стоп.",
+                    reply_markup=keyboard,
+                )
+            except Exception:
+                # Безопасно игнорируем единичные ошибки отправки
+                pass
+    except asyncio.CancelledError:
+        # Корректное завершение при отмене задачи
+        pass
+
+
+def start_user_reminder(user_id):
+    """Запускает напоминалку для пользователя, если таймер активен и задача ещё не запущена."""
+    # Напоминалка только при активном таймере, не для ручных режимов
+    if user_timers.get(user_id, {}).get('state') != 'running':
+        return
+    task = user_reminder_tasks.get(user_id)
+    if task and not task.done():
+        return
+    user_reminder_tasks[user_id] = asyncio.create_task(reminder_loop(user_id))
+
+
+async def stop_user_reminder(user_id):
+    """Останавливает активную напоминалку пользователя (если есть)."""
+    task = user_reminder_tasks.get(user_id)
+    if task and not task.done():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    user_reminder_tasks.pop(user_id, None)
+
 # Функция для обработки команды /manual
 @dp.message(Command('manual'))
 async def cmd_manual(message: types.Message):
@@ -510,8 +562,7 @@ async def cmd_manual(message: types.Message):
         buttons.append([InlineKeyboardButton(text="Добавить новый", callback_data="manual_new_project")])
 
         keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
-        await message.answer("Выберите проект для ручного добавления времени:", reply_markup=keyboard)
-
+        await message.answer("Выбери проект для ручного добавления времени:", reply_markup=keyboard)
 
 # Функция для обработки команды /stats
 @dp.message(Command('stats'))
@@ -589,6 +640,8 @@ async def handle_new_project(message: types.Message):
             'start_time': datetime.now(),
             'state': 'running'
         }
+        # запуск напоминалки
+        start_user_reminder(user_id)
         buttons = [[InlineKeyboardButton(text="⏹ Стоп", callback_data="stop_timer")]]
         keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
         await message.answer(f"Проект '{project_name}' добавлен, таймер запущен! Нажми 'Стоп' для остановки.", reply_markup=keyboard)
@@ -609,6 +662,8 @@ async def handle_callback(callback: types.CallbackQuery):
         buttons = [[InlineKeyboardButton(text="⏹ Стоп", callback_data="stop_timer")]]
         keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
         await callback.message.edit_text(f"Таймер для '{project_name}' запущен! Нажми 'Стоп' для остановки.", reply_markup=keyboard)
+        # запуск напоминалки
+        start_user_reminder(user_id)
 
     elif callback.data == "new_project":
         # Создание нового проекта
@@ -628,6 +683,8 @@ async def handle_callback(callback: types.CallbackQuery):
             user_timers[user_id]['state'] = 'awaiting_comment'
 
             await callback.message.edit_text("Таймер остановлен. Расскажи, что делала:")
+            # стоп напоминалки
+            await stop_user_reminder(user_id)
 
     elif callback.data.startswith("stats:"):
         # Обработка статистики
@@ -751,14 +808,22 @@ async def handle_comment(message: types.Message):
 
     # Предложение выбрать проект
     user_timers[user_id] = {'state': 'selecting_project'}
+    # Безопасно подгружаем список проектов
+    projects = user_projects.get(user_id) or await get_user_projects(user_id)
+    user_projects[user_id] = projects
     buttons = []
-    for project_name in user_projects[user_id]:
+    for project_name in projects:
         buttons.append([InlineKeyboardButton(text=project_name, callback_data=f"project:{project_name}")])
     buttons.append([InlineKeyboardButton(text="Добавить новый", callback_data="new_project")])
     keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
 
+    # Сообщение о сохранении без manual_* полей
     await message.answer(
-        f"что делала: {comment}\nВремя: {formatted_time}."
+        f"✅ Запись сохранена!\n\n"
+        f"Проект: {project_name}\n"
+        f"Дата: {start_time.strftime('%d.%m.%Y')}\n"
+        f"Время: {formatted_time}\n"
+        f"Что делала: {comment}"
     )
     await message.answer(
         "Выбери следующий проект или добавь новый:",
