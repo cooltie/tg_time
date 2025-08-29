@@ -90,7 +90,7 @@ async def get_stats_for_period(telegram_id, days=None):
             JOIN users u ON p.user_id = u.id
             WHERE u.telegram_id = $1
               AND p.start_time >= NOW() - make_interval(days => $2::int)
-              AND p.duration IS NOT NULL
+                AND p.duration IS NOT NULL
             ORDER BY p.start_time DESC
             """,
             telegram_id,
@@ -107,7 +107,7 @@ async def get_stats_for_period(telegram_id, days=None):
             FROM projects p
             JOIN users u ON p.user_id = u.id
             WHERE u.telegram_id = $1
-              AND p.duration IS NOT NULL
+                AND p.duration IS NOT NULL
             ORDER BY p.start_time DESC
             """,
             telegram_id,
@@ -439,9 +439,9 @@ async def save_manual_entry(user_id, message):
 
     await message.answer(
         f"✅ Запись сохранена!\n\n"
-        f"Проект: {project_name}\n"
-        f"Дата: {manual_date.strftime('%d.%m.%Y')}\n"
-        f"Время: {time_str}\n"
+                           f"Проект: {project_name}\n"
+                           f"Дата: {manual_date.strftime('%d.%m.%Y')}\n"
+                           f"Время: {time_str}\n"
         f"Что делала: {manual_comment}"
     )
 
@@ -498,7 +498,7 @@ async def reminder_loop(user_id):
     """Каждые 15 минут напоминает пользователю про активный таймер."""
     try:
         while True:
-            await asyncio.sleep(15)
+            await asyncio.sleep(15 * 60)
 
             # Если таймер уже не активен — выходим
             if user_timers.get(user_id, {}).get('state') != 'running':
