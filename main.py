@@ -17,6 +17,13 @@ load_dotenv()
 API_TOKEN = os.getenv('API_TOKEN')
 DATABASE_URL = os.getenv('DATABASE_URL')
 
+# Предустановленные типы проектов
+DEFAULT_PROJECT_TYPES = [
+    "🦹‍♀️ automation",
+    "🍿 design", 
+    "🫄 presale"
+]
+
 logging.basicConfig(level=logging.INFO)
 
 
@@ -55,6 +62,63 @@ async def check_user_exists(telegram_id):
 
     await conn.close()
     return user_exists
+
+
+async def get_user_project_types(telegram_id):
+    """Получает все типы проектов пользователя"""
+    conn = await asyncpg.connect(DATABASE_URL)
+    
+    # Получаем уникальные типы из существующих проектов пользователя
+    types = await conn.fetch("""
+        SELECT DISTINCT p.type
+        FROM projects p
+        JOIN users u ON p.user_id = u.id
+        WHERE u.telegram_id = $1 AND p.type IS NOT NULL
+        ORDER BY p.type
+    """, telegram_id)
+    
+    await conn.close()
+    
+    # Объединяем с предустановленными типами
+    user_types = [t['type'] for t in types]
+    all_types = list(set(DEFAULT_PROJECT_TYPES + user_types))
+    return all_types
+
+
+async def add_project_type(telegram_id, project_type):
+    """Добавляет новый тип проекта для пользователя"""
+    conn = await asyncpg.connect(DATABASE_URL)
+    
+    # Получаем ID пользователя
+    user_id = await conn.fetchval("""
+        SELECT id FROM users WHERE telegram_id = $1
+    """, telegram_id)
+    
+    if user_id:
+        # Добавляем запись с новым типом
+        await conn.execute("""
+            INSERT INTO projects (user_id, project_name, type)
+            VALUES ($1, '', $2)
+            ON CONFLICT DO NOTHING
+        """, user_id, project_type)
+    
+    await conn.close()
+
+
+async def update_project_type(telegram_id, project_name, project_type):
+    """Обновляет тип для конкретного проекта"""
+    conn = await asyncpg.connect(DATABASE_URL)
+    
+    await conn.execute("""
+        UPDATE projects 
+        SET type = $3
+        FROM users u
+        WHERE projects.user_id = u.id 
+        AND u.telegram_id = $1 
+        AND projects.project_name = $2
+    """, telegram_id, project_name, project_type)
+    
+    await conn.close()
 
 
 async def get_user_projects(telegram_id):
@@ -210,6 +274,24 @@ def format_stats_message(stats, period_name):
             "total_seconds": int(total_seconds),
         }
 
+    # Определяем границы периода
+    all_dates = []
+    for sessions in stats.values():
+        for s in sessions:
+            if s.get("start_time"):
+                all_dates.append(s["start_time"].date())
+    
+    if all_dates:
+        period_start = min(all_dates)
+        period_end = max(all_dates)
+        period_header = (
+            f"📊 Статистика {period_name} "
+            f"({period_start.strftime('%d.%m.%Y')} — "
+            f"{period_end.strftime('%d.%m.%Y')})"
+        )
+    else:
+        period_header = f"📊 Статистика {period_name}"
+
     # Группировка по дате -> проект -> сессии
     grouped = defaultdict(lambda: defaultdict(list))
     for project_name, sessions in stats.items():
@@ -220,7 +302,7 @@ def format_stats_message(stats, period_name):
             date_key = start_dt.date()
             grouped[date_key][project_name].append(s)
 
-    lines = [f"📊 Статистика {period_name}", ""]
+    lines = [period_header, ""]
 
     for date_key in sorted(grouped.keys(), reverse=True):
         lines.append(f"## {date_key.strftime('%d.%m.%Y')}")
@@ -228,7 +310,23 @@ def format_stats_message(stats, period_name):
 
         projects_for_date = grouped[date_key]
         for project_name in sorted(projects_for_date.keys()):
-            lines.append(f"{project_name}")
+            # Получаем статистику по проекту для этого периода
+            project_sessions = stats.get(project_name, [])
+            project_total_seconds = sum(int(s.get("seconds") or 0) for s in project_sessions)
+            project_sessions_count = len(project_sessions)
+            
+            # Форматируем время
+            p_hours, p_rem = divmod(project_total_seconds, 3600)
+            p_minutes, _ = divmod(p_rem, 60)
+            project_time_str = f"{int(p_hours):02}:{int(p_minutes):02}"
+            
+            # Формируем заголовок проекта с статистикой
+            project_header = (
+                f"{project_name} (сессий: {project_sessions_count}, "
+                f"угрохано: {project_time_str})"
+            )
+            lines.append(project_header)
+            
             for s in projects_for_date[project_name]:
                 seconds = int(s.get("seconds") or 0)
                 h, rem = divmod(seconds, 3600)
@@ -236,28 +334,8 @@ def format_stats_message(stats, period_name):
                 time_str = f"{int(h):02}:{int(m):02}"
                 sess_date = s["start_time"].strftime('%d.%m')
                 comment = s.get("comment") or "-"
-                lines.append(f"{sess_date} | {time_str} / {comment}")
+                lines.append(f"{sess_date} | {time_str} | {comment}")
 
-            lines.append("")
-
-    # Сводка по проектам за период
-    if totals_by_project:
-        lines.append("Итоги за период:")
-        lines.append("")
-        for project_name in sorted(totals_by_project.keys()):
-            totals = totals_by_project[project_name]
-            total_seconds = int(totals["total_seconds"])
-            t_hours, t_rem = divmod(total_seconds, 3600)
-            t_minutes, _ = divmod(t_rem, 60)
-            total_time_str = f"{int(t_hours):02}:{int(t_minutes):02}"
-
-            lines.append(project_name)
-            lines.append(
-                f"Всего сессий за период: {totals['sessions_count']}"
-            )
-            lines.append(
-                f"Всего времени за период: {total_time_str}"
-            )
             lines.append("")
 
     return "\n".join(lines).rstrip()
@@ -692,23 +770,15 @@ async def handle_callback(callback: types.CallbackQuery):
 
         if stats_type == "week":
             stats = await get_stats_for_current_week(user_id)
-            # вычислим календарные границы (пн-вс) для заголовка
-            now_dt = datetime.now()
-            week_start = (now_dt - timedelta(days=now_dt.weekday())).date()
-            week_end = week_start + timedelta(days=6)
-            message = format_flat_period_stats(
-                stats, "за неделю", start_date=week_start, end_date=week_end
+            message = format_stats_message(
+                stats, "за неделю"
             )
             await callback.message.edit_text(message)
 
         elif stats_type == "month":
             stats = await get_stats_for_current_month(user_id)
-            now_dt = datetime.now()
-            month_start = datetime(now_dt.year, now_dt.month, 1).date()
-            # до текущей даты включительно
-            month_end = now_dt.date()
-            message = format_flat_period_stats(
-                stats, "за месяц", start_date=month_start, end_date=month_end
+            message = format_stats_message(
+                stats, "за месяц"
             )
             await callback.message.edit_text(message)
 
