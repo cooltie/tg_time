@@ -10,14 +10,14 @@ from dotenv import load_dotenv
 import re
 from collections import defaultdict
 
-# Загрузка данных из .env
+# Load data from .env
 load_dotenv()
 
-# Получение переменных окружения
+# Get environment variables
 API_TOKEN = os.getenv('API_TOKEN')
 DATABASE_URL = os.getenv('DATABASE_URL')
 
-# Предустановленные типы проектов
+# Predefined project types
 DEFAULT_PROJECT_TYPES = [
     "🦹‍♀️ automation",
     "🍿 design", 
@@ -28,10 +28,10 @@ logging.basicConfig(level=logging.INFO)
 
 
 async def check_user_exists(telegram_id):
-    """Проверяет, существует ли пользователь в БД"""
+    """Checks if user exists in database"""
     conn = await asyncpg.connect(DATABASE_URL)
 
-    # Создаем таблицы если их нет
+    # Create tables if they don't exist
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id SERIAL PRIMARY KEY,
@@ -49,12 +49,12 @@ async def check_user_exists(telegram_id):
         );
     """)
 
-    # Проверяем существование пользователя
+    # Check if user exists
     user_exists = await conn.fetchval("""
         SELECT EXISTS(SELECT 1 FROM users WHERE telegram_id = $1)
     """, telegram_id)
 
-    # Если пользователя нет, создаем его
+    # If user doesn't exist, create them
     if not user_exists:
         await conn.execute("""
             INSERT INTO users (telegram_id) VALUES ($1)
@@ -65,10 +65,10 @@ async def check_user_exists(telegram_id):
 
 
 async def get_user_project_types(telegram_id):
-    """Получает все типы проектов пользователя"""
+    """Gets all project types for user"""
     conn = await asyncpg.connect(DATABASE_URL)
     
-    # Получаем уникальные типы из существующих проектов пользователя
+    # Get unique types from existing user projects
     types = await conn.fetch("""
         SELECT DISTINCT p.type
         FROM projects p
@@ -79,7 +79,7 @@ async def get_user_project_types(telegram_id):
     
     await conn.close()
     
-    # Объединяем с предустановленными типами
+    # Combine with predefined types
     user_types = [t['type'] for t in types]
     all_types = list(set(DEFAULT_PROJECT_TYPES + user_types))
     return all_types
@@ -260,12 +260,12 @@ async def get_stats_for_current_month(telegram_id):
     return stats
 
 def format_stats_message(stats, period_name):
-    """Формат: заголовок, затем по датам: проект, итоги за период,
-    далее строки "дата/время/что делал(а)"."""
+    """Format: header, then by dates: project, totals for period,
+    then lines "date/time/what you did"."""
     if not stats:
-        return f"📊 Статистика {period_name}\n\nДанных пока нет."
+        return f"📊 Statistics {period_name}\n\nNo data yet."
 
-    # Итоги за период по каждому проекту
+    # Totals for period by each project
     totals_by_project = {}
     for project_name, sessions in stats.items():
         total_seconds = sum(int(s.get("seconds") or 0) for s in sessions)
@@ -274,7 +274,7 @@ def format_stats_message(stats, period_name):
             "total_seconds": int(total_seconds),
         }
 
-    # Определяем границы периода
+    # Determine period boundaries
     all_dates = []
     for sessions in stats.values():
         for s in sessions:
@@ -285,14 +285,14 @@ def format_stats_message(stats, period_name):
         period_start = min(all_dates)
         period_end = max(all_dates)
         period_header = (
-            f"📊 Статистика {period_name} "
+            f"📊 Statistics {period_name} "
             f"({period_start.strftime('%d.%m.%Y')} — "
             f"{period_end.strftime('%d.%m.%Y')})"
         )
     else:
-        period_header = f"📊 Статистика {period_name}"
+        period_header = f"📊 Statistics {period_name}"
 
-    # Группировка по дате -> проект -> сессии
+    # Group by date -> project -> sessions
     grouped = defaultdict(lambda: defaultdict(list))
     for project_name, sessions in stats.items():
         for s in sessions:
@@ -304,26 +304,51 @@ def format_stats_message(stats, period_name):
 
     lines = [period_header, ""]
 
+    # Add general summary for period
+    lines.append("Total:")
+    total_by_project = {}
+    for project_name, sessions in stats.items():
+        total_seconds = sum(int(s.get("seconds") or 0) for s in sessions)
+        sessions_count = len(sessions)
+        total_by_project[project_name] = {
+            "total_seconds": total_seconds,
+            "sessions_count": sessions_count
+        }
+    
+    for project_name in sorted(total_by_project.keys()):
+        totals = total_by_project[project_name]
+        total_seconds = totals["total_seconds"]
+        sessions_count = totals["sessions_count"]
+        
+        # Format time
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, _ = divmod(remainder, 60)
+        time_str = f"{int(hours):02}:{int(minutes):02}"
+        
+        lines.append(f"{project_name} | {sessions_count} — {time_str}")
+    
+    lines.append("")  # Empty line before detailed statistics
+
     for date_key in sorted(grouped.keys(), reverse=True):
         lines.append(f"## {date_key.strftime('%d.%m.%Y')}")
         lines.append("")
 
         projects_for_date = grouped[date_key]
         for project_name in sorted(projects_for_date.keys()):
-            # Получаем статистику по проекту для этого периода
-            project_sessions = stats.get(project_name, [])
-            project_total_seconds = sum(int(s.get("seconds") or 0) for s in project_sessions)
-            project_sessions_count = len(project_sessions)
+            # Get project statistics only for this day
+            day_sessions = projects_for_date[project_name]
+            day_total_seconds = sum(int(s.get("seconds") or 0) for s in day_sessions)
+            day_sessions_count = len(day_sessions)
             
-            # Форматируем время
-            p_hours, p_rem = divmod(project_total_seconds, 3600)
+            # Format time
+            p_hours, p_rem = divmod(day_total_seconds, 3600)
             p_minutes, _ = divmod(p_rem, 60)
             project_time_str = f"{int(p_hours):02}:{int(p_minutes):02}"
             
-            # Формируем заголовок проекта с статистикой
+            # Form project header with daily statistics
             project_header = (
-                f"{project_name} (сессий: {project_sessions_count}, "
-                f"угрохано: {project_time_str})"
+                f"{project_name} (sessions: {day_sessions_count}, "
+                f"time spent: {project_time_str})"
             )
             lines.append(project_header)
             
@@ -342,9 +367,9 @@ def format_stats_message(stats, period_name):
 
 
 def format_flat_period_stats(stats, period_name, start_date=None, end_date=None, days=None):
-    """Плоский вывод: заголовок с датами периода, далее строки
-    "ДД.ММ | ЧЧ:ММ | проект | комментарий", отсортировано по дате сессии."""
-    # Собираем все сессии в один список
+    """Flat output: header with period dates, then lines
+    "DD.MM | HH:MM | project | comment", sorted by session date."""
+    # Collect all sessions in one list
     all_sessions = []
     for project_name, sessions in stats.items():
         for s in sessions:
@@ -356,7 +381,7 @@ def format_flat_period_stats(stats, period_name, start_date=None, end_date=None,
             all_sessions.append((start_dt, seconds, project_name, comment))
 
     if all_sessions:
-        all_sessions.sort(key=lambda x: x[0])  # по времени возрастанию
+        all_sessions.sort(key=lambda x: x[0])  # by time ascending
         calc_start = all_sessions[0][0].date()
         calc_end = all_sessions[-1][0].date()
     else:
@@ -367,20 +392,20 @@ def format_flat_period_stats(stats, period_name, start_date=None, end_date=None,
     header_end = (end_date or calc_end)
 
     lines = [
-        f"📊 Статистика {period_name} ({header_start.strftime('%d.%m.%Y')} — {header_end.strftime('%d.%m.%Y')})",
+        f"📊 Statistics {period_name} ({header_start.strftime('%d.%m.%Y')} — {header_end.strftime('%d.%m.%Y')})",
         "",
     ]
 
     if not all_sessions:
-        lines.append("Данных пока нет.")
+        lines.append("No data yet.")
         return "\n".join(lines)
 
-    # Суммарное время за период по всем проектам
+    # Total time for period across all projects
     total_seconds_all = sum(s[1] for s in all_sessions)
     t_hours, t_rem = divmod(int(total_seconds_all), 3600)
     t_minutes, _ = divmod(t_rem, 60)
     total_time_str = f"{int(t_hours):02}:{int(t_minutes):02}"
-    lines.append(f"Всего времени за период: {total_time_str}")
+    lines.append(f"Total time for period: {total_time_str}")
     lines.append("")
 
     for start_dt, seconds, project_name, comment in all_sessions:
@@ -490,7 +515,7 @@ async def save_manual_entry(user_id, message):
     manual_comment = timer_data.get('manual_comment')
 
     if not all([project_name, manual_date, manual_duration_seconds, manual_comment]):
-        await message.edit_text("❌ Ошибка: не все данные заполнены.")
+        await message.edit_text("❌ Error: not all data filled.")
         return
 
     # Создаем start_time и end_time
@@ -516,11 +541,11 @@ async def save_manual_entry(user_id, message):
     time_str = f"{int(hours):02}:{int(minutes):02}"
 
     await message.answer(
-        f"✅ Запись сохранена!\n\n"
-                           f"Проект: {project_name}\n"
-                           f"Дата: {manual_date.strftime('%d.%m.%Y')}\n"
-                           f"Время: {time_str}\n"
-        f"Что делала: {manual_comment}"
+        f"✅ Entry saved!\n\n"
+                           f"Project: {project_name}\n"
+                           f"Date: {manual_date.strftime('%d.%m.%Y')}\n"
+                           f"Time: {time_str}\n"
+        f"What you did: {manual_comment}"
     )
 
 
@@ -560,15 +585,15 @@ async def save_time_entry(user_id, telegram_id, project_name, start_time, end_ti
 
     await conn.close()
 
-# Создаем объекты бота и диспетчера
+# Create bot and dispatcher objects
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
-# Переменные для отслеживания состояния пользователей
-user_timers = {}  # Хранение таймеров и состояния для каждого пользователя
-user_projects = {}  # Хранение проектов для каждого пользователя
+# Variables for tracking user state
+user_timers = {}  # Store timers and state for each user
+user_projects = {}  # Store projects for each user
 
-# Фоновые напоминалки по пользователям (user_id -> asyncio.Task)
+# Background reminders by users (user_id -> asyncio.Task)
 user_reminder_tasks = {}
 
 
@@ -578,29 +603,29 @@ async def reminder_loop(user_id):
         while True:
             await asyncio.sleep(15 * 60)
 
-            # Если таймер уже не активен — выходим
+            # If timer is no longer active — exit
             if user_timers.get(user_id, {}).get('state') != 'running':
                 break
 
-            buttons = [[InlineKeyboardButton(text="⏹ Стоп", callback_data="stop_timer")]]
+            buttons = [[InlineKeyboardButton(text="⏹ Stop", callback_data="stop_timer")]]
             keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
             try:
                 await bot.send_message(
                     chat_id=user_id,
-                    text="⏰ Ты ещё работаешь? Если закончил(а), нажми Стоп.",
+                    text="⏰ Are you still working? If you're done, press Stop.",
                     reply_markup=keyboard,
                 )
             except Exception:
-                # Безопасно игнорируем единичные ошибки отправки
+                # Safely ignore single send errors
                 pass
     except asyncio.CancelledError:
-        # Корректное завершение при отмене задачи
+        # Correct completion when task is cancelled
         pass
 
 
 def start_user_reminder(user_id):
-    """Запускает напоминалку для пользователя, если таймер активен и задача ещё не запущена."""
-    # Напоминалка только при активном таймере, не для ручных режимов
+    """Starts reminder for user if timer is active and task is not yet started."""
+    # Reminder only for active timer, not for manual modes
     if user_timers.get(user_id, {}).get('state') != 'running':
         return
     task = user_reminder_tasks.get(user_id)
@@ -620,89 +645,89 @@ async def stop_user_reminder(user_id):
             pass
     user_reminder_tasks.pop(user_id, None)
 
-# Функция для обработки команды /manual
+# Function for handling /manual command
 @dp.message(Command('manual'))
 async def cmd_manual(message: types.Message):
     user_id = message.from_user.id
 
-    # Получаем проекты пользователя из БД
+    # Get user projects from database
     projects = await get_user_projects(user_id)
 
     if not projects:
-        # Если проектов нет, предлагаем создать новый
+        # If no projects, offer to create new one
         user_timers[user_id] = {'state': 'manual_awaiting_new_project'}
-        await message.answer("У тебя пока нет проектов. Введи название нового проекта:")
+        await message.answer("You don't have any projects yet. Enter a name for a new project:")
     else:
-        # Показываем список проектов + кнопка добавить новый
+        # Show project list + add new button
         buttons = []
         for project_name in projects:
             buttons.append([InlineKeyboardButton(text=project_name, callback_data=f"manual_project:{project_name}")])
-        buttons.append([InlineKeyboardButton(text="Добавить новый", callback_data="manual_new_project")])
+        buttons.append([InlineKeyboardButton(text="Add new", callback_data="manual_new_project")])
 
         keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
-        await message.answer("Выбери проект для ручного добавления времени:", reply_markup=keyboard)
+        await message.answer("Choose a project for manual time entry:", reply_markup=keyboard)
 
-# Функция для обработки команды /stats
+# Function for handling /stats command
 @dp.message(Command('stats'))
 async def cmd_stats(message: types.Message):
     buttons = [
-        [InlineKeyboardButton(text="📅 За неделю", callback_data="stats:week")],
-        [InlineKeyboardButton(text="📆 За месяц", callback_data="stats:month")],
-        [InlineKeyboardButton(text="📊 По проекту (за все время)", callback_data="stats:project")]
+        [InlineKeyboardButton(text="📅 For the week", callback_data="stats:week")],
+        [InlineKeyboardButton(text="📆 For the month", callback_data="stats:month")],
+        [InlineKeyboardButton(text="📊 By project (all time)", callback_data="stats:project")]
     ]
     keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
-    await message.answer("Выбери период для статистики:", reply_markup=keyboard)
+    await message.answer("Choose a period for statistics:", reply_markup=keyboard)
 
 
-# Функция для обработки команды /start
+# Function for handling /start command
 @dp.message(Command('start'))
 async def cmd_start(message: types.Message):
     user_id = message.from_user.id
 
-    # Проверяем, новый ли это пользователь
+    # Check if this is a new user
     user_exists = await check_user_exists(user_id)
 
-    # Если пользователь новый, показываем приветствие
+    # If user is new, show welcome message
     if not user_exists:
         await message.answer(
-            "Привет! 👋\n"
-            "Приложение предложит ввести название проекта 📝, а потом сразу запустит таймер — он будет фиксировать время, которое ты тратишь на проект.\n\n"
-            "В меню ты сможешь:\n"
-            "	•	посмотреть статистику по своим проектам 📊\n"
-            "	•	вручную добавить время, если работал без таймера ⌛"
+            "Hello! 👋\n"
+            "The app will ask you to enter a project name 📝, then immediately start a timer that will track the time you spend on the project.\n\n"
+            "In the menu you can:\n"
+            "	•	view statistics for your projects 📊\n"
+            "	•	manually add time if you worked without a timer ⌛"
         )
 
-        # Показываем typing эффект на 5 секунд
+        # Show typing effect for 5 seconds
         await bot.send_chat_action(chat_id=message.chat.id, action="typing")
         await asyncio.sleep(5)
 
-    # Получаем проекты пользователя из БД
+    # Get user projects from database
     projects = await get_user_projects(user_id)
 
-    # Обновляем локальный кэш проектов
+    # Update local project cache
     user_projects[user_id] = projects
 
-    # Если у пользователя нет проектов в БД
+    # If user has no projects in database
     if not projects:
         user_timers[user_id] = {'state': 'awaiting_new_project'}
         await message.answer(
-            "У тебя пока нет проектов. Введи название нового проекта:",
+            "You don't have any projects yet. Enter a name for a new project:",
             reply_markup=types.ReplyKeyboardRemove()
         )
     else:
         buttons = []
         for project_name in projects:
             buttons.append([InlineKeyboardButton(text=project_name, callback_data=f"project:{project_name}")])
-        buttons.append([InlineKeyboardButton(text="Добавить новый", callback_data="new_project")])
+        buttons.append([InlineKeyboardButton(text="Add new", callback_data="new_project")])
 
         keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
         user_timers[user_id] = {'state': 'selecting_project'}
         await message.answer(
-            "Выбери проект или создай новый:",
+            "Choose a project or create a new one:",
             reply_markup=keyboard
         )
 
-# Функция для обработки ввода названия нового проекта
+# Function for handling new project name input
 @dp.message(lambda message: user_timers.get(message.from_user.id, {}).get('state') == 'awaiting_new_project')
 async def handle_new_project(message: types.Message):
     user_id = message.from_user.id
@@ -718,75 +743,75 @@ async def handle_new_project(message: types.Message):
             'start_time': datetime.now(),
             'state': 'running'
         }
-        # запуск напоминалки
+        # start reminder
         start_user_reminder(user_id)
-        buttons = [[InlineKeyboardButton(text="⏹ Стоп", callback_data="stop_timer")]]
+        buttons = [[InlineKeyboardButton(text="⏹ Stop", callback_data="stop_timer")]]
         keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
-        await message.answer(f"Проект '{project_name}' добавлен, таймер запущен! Нажми 'Стоп' для остановки.", reply_markup=keyboard)
+        await message.answer(f"Project '{project_name}' added, timer started! Press 'Stop' to stop.", reply_markup=keyboard)
 
-# Обработчик инлайн-кнопок
+# Inline button handler
 @dp.callback_query()
 async def handle_callback(callback: types.CallbackQuery):
     user_id = callback.from_user.id
 
     if callback.data.startswith("project:"):
-        # Выбор существующего проекта
+        # Select existing project
         project_name = callback.data.replace("project:", "")
         user_timers[user_id] = {
             'project': project_name,
             'start_time': datetime.now(),
             'state': 'running'
         }
-        buttons = [[InlineKeyboardButton(text="⏹ Стоп", callback_data="stop_timer")]]
+        buttons = [[InlineKeyboardButton(text="⏹ Stop", callback_data="stop_timer")]]
         keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
-        await callback.message.edit_text(f"Таймер для '{project_name}' запущен! Нажми 'Стоп' для остановки.", reply_markup=keyboard)
-        # запуск напоминалки
+        await callback.message.edit_text(f"Timer for '{project_name}' started! Press 'Stop' to stop.", reply_markup=keyboard)
+        # start reminder
         start_user_reminder(user_id)
 
     elif callback.data == "new_project":
-        # Создание нового проекта
+        # Create new project
         user_timers[user_id] = {'state': 'awaiting_new_project'}
-        await callback.message.edit_text("Введи название нового проекта:")
+        await callback.message.edit_text("Enter a name for the new project:")
 
     elif callback.data == "stop_timer":
-        # Остановка таймера
+        # Stop timer
         if user_id in user_timers and user_timers[user_id].get('start_time'):
             start_time = user_timers[user_id]['start_time']
             end_time = datetime.now()
             elapsed_time = end_time - start_time
 
-            # Сохраняем в user_timers время и ожидаем комментарий
+            # Save to user_timers and wait for comment
             user_timers[user_id]['end_time'] = end_time
             user_timers[user_id]['duration'] = elapsed_time
             user_timers[user_id]['state'] = 'awaiting_comment'
 
-            await callback.message.edit_text("Таймер остановлен. Расскажи, что делала:")
-            # стоп напоминалки
+            await callback.message.edit_text("Timer stopped. Tell me what you were doing:")
+            # stop reminder
             await stop_user_reminder(user_id)
 
     elif callback.data.startswith("stats:"):
-        # Обработка статистики
+        # Handle statistics
         stats_type = callback.data.replace("stats:", "")
 
         if stats_type == "week":
             stats = await get_stats_for_current_week(user_id)
             message = format_stats_message(
-                stats, "за неделю"
+                stats, "for the week"
             )
             await callback.message.edit_text(message)
 
         elif stats_type == "month":
             stats = await get_stats_for_current_month(user_id)
             message = format_stats_message(
-                stats, "за месяц"
+                stats, "for the month"
             )
             await callback.message.edit_text(message)
 
         elif stats_type == "project":
-            # Показать список проектов для выбора
+            # Show project list for selection
             projects = await get_user_projects(user_id)
             if not projects:
-                await callback.message.edit_text("У вас пока нет проектов.")
+                await callback.message.edit_text("You don't have any projects yet.")
             else:
                 buttons = []
                 for project_name in projects:
@@ -796,18 +821,18 @@ async def handle_callback(callback: types.CallbackQuery):
                     )])
                 keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
                 await callback.message.edit_text(
-                    "Выбери проект для просмотра статистики:",
+                    "Choose a project to view statistics:",
                     reply_markup=keyboard
                 )
 
     elif callback.data.startswith("project_stats:"):
-        # Статистика по конкретному проекту
+        # Statistics for specific project
         project_name = callback.data.replace("project_stats:", "")
         daily_stats, total_stats = await get_project_stats(user_id, project_name)
         sessions_rows = await get_project_sessions(user_id, project_name)
 
         if not total_stats or not total_stats['total_seconds']:
-            await callback.message.edit_text(f"📊 Проект: {project_name}\n\nДанных пока нет.")
+            await callback.message.edit_text(f"📊 Project: {project_name}\n\nNo data yet.")
         else:
             total_seconds = total_stats['total_seconds']
             total_sessions = total_stats['total_sessions']
@@ -816,11 +841,11 @@ async def handle_callback(callback: types.CallbackQuery):
             minutes, _ = divmod(remainder, 60)
             total_time_str = f"{int(hours):02}:{int(minutes):02}"
 
-            message = f"За все время: {project_name}\n"
-            message += f"Всего времени за период: {total_time_str}\n"
+            message = f"All time: {project_name}\n"
+            message += f"Total time for period: {total_time_str}\n"
 
             if sessions_rows:
-                message += "\n🧾 Сессии:\n"
+                message += "\n🧾 Sessions:\n"
                 for r in sessions_rows:
                     sess_dt = r['start_time']
                     seconds = int(r['seconds'] or 0)
@@ -834,32 +859,32 @@ async def handle_callback(callback: types.CallbackQuery):
             await callback.message.edit_text(message)
 
     elif callback.data.startswith("manual_project:"):
-        # Ручное добавление для существующего проекта
+        # Manual entry for existing project
         project_name = callback.data.replace("manual_project:", "")
         user_timers[user_id] = {
             'state': 'manual_awaiting_date',
             'manual_project': project_name
         }
-        await callback.message.edit_text(f"Проект: {project_name}\n\nВведи дату в формате ДД ММ ГГ (например: 15 08 24):")
+        await callback.message.edit_text(f"Project: {project_name}\n\nEnter date in format DD MM YY (e.g.: 15 08 24):")
 
     elif callback.data == "manual_new_project":
-        # Создание нового проекта для ручного добавления
+        # Create new project for manual entry
         user_timers[user_id] = {'state': 'manual_awaiting_new_project'}
-        await callback.message.edit_text("Введи название нового проекта:")
+        await callback.message.edit_text("Enter a name for the new project:")
 
     elif callback.data == "manual_save":
-        # Сохранение ручной записи
+        # Save manual entry
         await save_manual_entry(user_id, callback.message)
 
     await callback.answer()
 
 
 
-# Обработка комментария
+# Comment handling
 @dp.message(lambda message: user_timers.get(message.from_user.id, {}).get('state') == 'awaiting_comment')
 async def handle_comment(message: types.Message):
     user_id = message.from_user.id
-    telegram_id = message.from_user.id  # telegram_id тот же, что и user_id
+    telegram_id = message.from_user.id  # telegram_id is the same as user_id
     project_name = user_timers[user_id]['project']
     start_time = user_timers[user_id]['start_time']
     end_time = user_timers[user_id]['end_time']
@@ -867,58 +892,58 @@ async def handle_comment(message: types.Message):
     elapsed_time = end_time - start_time
     comment = message.text
 
-    # Преобразование времени в формат hh:mm
+    # Convert time to hh:mm format
     hours, remainder = divmod(elapsed_time.total_seconds(), 3600)
     minutes, _ = divmod(remainder, 60)
     formatted_time = f"{int(hours):02}:{int(minutes):02}"
 
 
-    # Сохранение в БД
+    # Save to database
     await save_time_entry(user_id, telegram_id, project_name, start_time, end_time, duration, comment)
 
-    # Предложение выбрать проект
+    # Offer to select project
     user_timers[user_id] = {'state': 'selecting_project'}
-    # Безопасно подгружаем список проектов
+    # Safely load project list
     projects = user_projects.get(user_id) or await get_user_projects(user_id)
     user_projects[user_id] = projects
     buttons = []
     for next_project in projects:
         buttons.append([InlineKeyboardButton(text=next_project, callback_data=f"project:{next_project}")])
-    buttons.append([InlineKeyboardButton(text="Добавить новый", callback_data="new_project")])
+    buttons.append([InlineKeyboardButton(text="Add new", callback_data="new_project")])
     keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
 
-    # Сообщение о сохранении без manual_* полей
+    # Save confirmation message without manual_* fields
     await message.answer(
-        f"✅ Запись сохранена!\n\n"
-        f"Проект: {project_name}\n"
-        f"Дата: {start_time.strftime('%d.%m.%Y')}\n"
-        f"Время: {formatted_time}\n"
-        f"Что делала: {comment}"
+        f"✅ Entry saved!\n\n"
+        f"Project: {project_name}\n"
+        f"Date: {start_time.strftime('%d.%m.%Y')}\n"
+        f"Time: {formatted_time}\n"
+        f"What you did: {comment}"
     )
     await message.answer(
-        "Выбери следующий проект или добавь новый:",
+        "Choose next project or add a new one:",
         reply_markup=keyboard
     )
 
 
-# Обработчики для ручного ввода времени
+# Handlers for manual time entry
 @dp.message(lambda message: user_timers.get(message.from_user.id, {}).get('state') == 'manual_awaiting_new_project')
 async def handle_manual_new_project(message: types.Message):
     user_id = message.from_user.id
     project_name = message.text.strip()
 
     if project_name:
-        # Добавляем проект в локальный кэш
+        # Add project to local cache
         if user_id not in user_projects:
             user_projects[user_id] = []
         user_projects[user_id].append(project_name)
 
-        # Переходим к вводу даты
+        # Move to date input
         user_timers[user_id] = {
             'state': 'manual_awaiting_date',
             'manual_project': project_name
         }
-        await message.answer(f"Проект: {project_name}\n\nВведи дату в формате ДД ММ ГГ (например: 15 08 24):")
+        await message.answer(f"Project: {project_name}\n\nEnter date in format DD MM YY (e.g.: 15 08 24):")
 
 
 @dp.message(lambda message: user_timers.get(message.from_user.id, {}).get('state') == 'manual_awaiting_date')
@@ -928,14 +953,14 @@ async def handle_manual_date(message: types.Message):
 
     parsed_date = validate_date_format(date_text)
     if not parsed_date:
-        await message.answer("❌ Неверный формат даты. Используйте формат ДД ММ ГГ (например: 15 08 24):")
+        await message.answer("❌ Invalid date format. Use format DD MM YY (e.g.: 15 08 24):")
         return
 
-    # Сохраняем дату и переходим к вводу времени
+    # Save date and move to time input
     user_timers[user_id]['manual_date'] = parsed_date
     user_timers[user_id]['state'] = 'manual_awaiting_time'
 
-    await message.answer(f"Дата: {parsed_date.strftime('%d.%m.%Y')}\n\nВведите количество затраченных часов в формате ЧЧ:ММ (например: 02:30):")
+    await message.answer(f"Date: {parsed_date.strftime('%d.%m.%Y')}\n\nEnter hours spent in format HH:MM (e.g.: 02:30):")
 
 
 @dp.message(lambda message: user_timers.get(message.from_user.id, {}).get('state') == 'manual_awaiting_time')
@@ -945,14 +970,14 @@ async def handle_manual_time(message: types.Message):
 
     duration_seconds = validate_time_format(time_text)
     if duration_seconds is None:
-        await message.answer("❌ Неверный формат времени. Используйте формат ЧЧ:ММ (например: 02:30):")
+        await message.answer("❌ Invalid time format. Use format HH:MM (e.g.: 02:30):")
         return
 
-    # Сохраняем время и переходим к вводу комментария
+    # Save time and move to comment input
     user_timers[user_id]['manual_duration_seconds'] = duration_seconds
     user_timers[user_id]['state'] = 'manual_awaiting_comment'
 
-    await message.answer(f"Время: {time_text}\n\nНапиши, что делала:")
+    await message.answer(f"Time: {time_text}\n\nWrite what you did:")
 
 
 @dp.message(lambda message: user_timers.get(message.from_user.id, {}).get('state') == 'manual_awaiting_comment')
@@ -960,11 +985,11 @@ async def handle_manual_comment(message: types.Message):
     user_id = message.from_user.id
     comment = message.text.strip()
 
-    # Сохраняем комментарий
+    # Save comment
     user_timers[user_id]['manual_comment'] = comment
     user_timers[user_id]['state'] = 'manual_ready_to_save'
 
-    # Показываем сводку и кнопку сохранения
+    # Show summary and save button
     timer_data = user_timers[user_id]
     project_name = timer_data['manual_project']
     manual_date = timer_data['manual_date']
@@ -974,28 +999,28 @@ async def handle_manual_comment(message: types.Message):
     minutes, _ = divmod(remainder, 60)
     time_str = f"{int(hours):02}:{int(minutes):02}"
 
-    buttons = [[InlineKeyboardButton(text="💾 Сохранить", callback_data="manual_save")]]
+    buttons = [[InlineKeyboardButton(text="💾 Save", callback_data="manual_save")]]
     keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
 
     await message.answer(
-        f"📋 Проверьте данные:\n\n"
-        f"Проект: {project_name}\n"
-        f"Дата: {manual_date.strftime('%d.%m.%Y')}\n"
-        f"Время: {time_str}\n"
-        f"Что делала: {comment}\n\n"
-        f"Нажмите 'Сохранить' для подтверждения:",
+        f"📋 Check the data:\n\n"
+        f"Project: {project_name}\n"
+        f"Date: {manual_date.strftime('%d.%m.%Y')}\n"
+        f"Time: {time_str}\n"
+        f"What you did: {comment}\n\n"
+        f"Press 'Save' to confirm:",
         reply_markup=keyboard
     )
 
 
-# Запуск бота
+# Bot startup
 async def main():
     db = await asyncpg.create_pool(DATABASE_URL)
 
-    # Получаем название базы данных
+    # Get database name
     async with db.acquire() as connection:
         db_name = await connection.fetchval("SELECT current_database()")
-        print(f"Подключение установлено к базе данных: {db_name}")
+        print(f"Connection established to database: {db_name}")
 
     await dp.start_polling(bot)
 
