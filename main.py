@@ -882,8 +882,8 @@ async def handle_comment(message: types.Message):
     projects = user_projects.get(user_id) or await get_user_projects(user_id)
     user_projects[user_id] = projects
     buttons = []
-    for project_name in projects:
-        buttons.append([InlineKeyboardButton(text=project_name, callback_data=f"project:{project_name}")])
+    for next_project in projects:
+        buttons.append([InlineKeyboardButton(text=next_project, callback_data=f"project:{next_project}")])
     buttons.append([InlineKeyboardButton(text="Добавить новый", callback_data="new_project")])
     keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
 
