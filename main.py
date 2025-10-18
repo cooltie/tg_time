@@ -4,11 +4,13 @@ import os
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 import asyncpg
 from dotenv import load_dotenv
 import re
 from collections import defaultdict
+import csv
+import tempfile
 
 # Load data from .env
 load_dotenv()
@@ -259,6 +261,47 @@ async def get_stats_for_current_month(telegram_id):
         stats.setdefault(name, []).append(session)
     return stats
 
+
+async def get_stats_for_custom_period(telegram_id, start_date, end_date):
+    """Сессии за произвольный период (с start_date по end_date включительно)"""
+    conn = await asyncpg.connect(DATABASE_URL)
+
+    # Convert dates to datetime at start and end of day
+    start_datetime = datetime.combine(start_date, datetime.min.time())
+    end_datetime = datetime.combine(end_date, datetime.max.time())
+
+    rows = await conn.fetch(
+        """
+        SELECT
+            p.project_name,
+            p.start_time,
+            EXTRACT(EPOCH FROM p.duration) AS seconds,
+            p.comment
+        FROM projects p
+        JOIN users u ON p.user_id = u.id
+        WHERE u.telegram_id = $1
+          AND p.duration IS NOT NULL
+          AND p.start_time >= $2
+          AND p.start_time <= $3
+        ORDER BY p.start_time ASC
+        """,
+        telegram_id,
+        start_datetime,
+        end_datetime,
+    )
+    await conn.close()
+
+    stats = {}
+    for r in rows:
+        name = r["project_name"]
+        session = {
+            "seconds": int(r["seconds"] or 0),
+            "comment": r["comment"] or "",
+            "start_time": r["start_time"],
+        }
+        stats.setdefault(name, []).append(session)
+    return stats
+
 def format_stats_message(stats, period_name):
     """Format: header, then by dates: project, totals for period,
     then lines "date/time/what you did"."""
@@ -471,6 +514,144 @@ async def get_project_sessions(telegram_id, project_name):
     await conn.close()
     return rows
 
+def generate_csv_file(stats, period_name):
+    """Создает CSV файл со статистикой и возвращает путь к файлу"""
+    # Create temporary file
+    temp_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.csv', encoding='utf-8-sig')
+
+    try:
+        writer = csv.writer(temp_file)
+
+        # Write header
+        writer.writerow(['Date', 'Time (HH:MM)', 'Project', 'Comment'])
+
+        # Collect all sessions
+        all_sessions = []
+        for project_name, sessions in stats.items():
+            for s in sessions:
+                start_dt = s.get("start_time")
+                if not start_dt:
+                    continue
+                seconds = int(s.get("seconds") or 0)
+                hours, remainder = divmod(seconds, 3600)
+                minutes, _ = divmod(remainder, 60)
+                time_str = f"{int(hours):02}:{int(minutes):02}"
+                comment = s.get("comment") or "-"
+                date_str = start_dt.strftime('%d.%m.%Y')
+
+                all_sessions.append((start_dt, date_str, project_name, time_str, comment))
+
+        # Sort by date
+        all_sessions.sort(key=lambda x: x[0])
+
+        # Write data
+        for _, date_str, project_name, time_str, comment in all_sessions:
+            writer.writerow([date_str, time_str, project_name, comment])
+
+        temp_file.close()
+        return temp_file.name
+
+    except Exception as e:
+        temp_file.close()
+        os.unlink(temp_file.name)
+        raise e
+
+
+def format_summary_message(stats, period_name):
+    """Краткая сводка по статистике (без детального списка сессий)"""
+    if not stats:
+        return f"📊 Statistics {period_name}\n\nNo data yet."
+
+    # Determine period boundaries
+    all_dates = []
+    for sessions in stats.values():
+        for s in sessions:
+            if s.get("start_time"):
+                all_dates.append(s["start_time"].date())
+
+    if all_dates:
+        period_start = min(all_dates)
+        period_end = max(all_dates)
+        period_header = (
+            f"📊 Statistics {period_name}\n"
+            f"({period_start.strftime('%d.%m.%Y')} — "
+            f"{period_end.strftime('%d.%m.%Y')})"
+        )
+    else:
+        period_header = f"📊 Statistics {period_name}"
+
+    lines = [period_header, ""]
+
+    # Calculate totals by project
+    total_by_project = {}
+    grand_total_seconds = 0
+    for project_name, sessions in stats.items():
+        total_seconds = sum(int(s.get("seconds") or 0) for s in sessions)
+        sessions_count = len(sessions)
+        total_by_project[project_name] = {
+            "total_seconds": total_seconds,
+            "sessions_count": sessions_count
+        }
+        grand_total_seconds += total_seconds
+
+    # Grand total
+    hours, remainder = divmod(grand_total_seconds, 3600)
+    minutes, _ = divmod(remainder, 60)
+    grand_total_str = f"{int(hours):02}:{int(minutes):02}"
+    lines.append(f"⏱ Total time: {grand_total_str}")
+    lines.append("")
+
+    # By project
+    lines.append("📋 By projects:")
+    for project_name in sorted(total_by_project.keys()):
+        totals = total_by_project[project_name]
+        total_seconds = totals["total_seconds"]
+        sessions_count = totals["sessions_count"]
+
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, _ = divmod(remainder, 60)
+        time_str = f"{int(hours):02}:{int(minutes):02}"
+
+        lines.append(f"  • {project_name}: {time_str} ({sessions_count} sessions)")
+
+    lines.append("")
+    lines.append("📎 Detailed data exported to CSV file")
+
+    return "\n".join(lines)
+
+
+def split_message(text, max_length=4000):
+    """Разбивает длинное сообщение на части по max_length символов"""
+    if len(text) <= max_length:
+        return [text]
+
+    parts = []
+    current_part = ""
+
+    for line in text.split('\n'):
+        # Если добавление строки превысит лимит, сохраняем текущую часть
+        if len(current_part) + len(line) + 1 > max_length:
+            if current_part:
+                parts.append(current_part.rstrip())
+                current_part = ""
+
+        # Если одна строка длиннее лимита, режем её
+        if len(line) > max_length:
+            if current_part:
+                parts.append(current_part.rstrip())
+                current_part = ""
+            # Режем длинную строку на куски
+            for i in range(0, len(line), max_length):
+                parts.append(line[i:i+max_length])
+        else:
+            current_part += line + '\n'
+
+    if current_part:
+        parts.append(current_part.rstrip())
+
+    return parts
+
+
 def validate_date_format(date_text):
     """Валидация формата даты ДД ММ ГГ"""
     pattern = r'^(\d{1,2})\s+(\d{1,2})\s+(\d{2})$'
@@ -673,7 +854,8 @@ async def cmd_stats(message: types.Message):
     buttons = [
         [InlineKeyboardButton(text="📅 For the week", callback_data="stats:week")],
         [InlineKeyboardButton(text="📆 For the month", callback_data="stats:month")],
-        [InlineKeyboardButton(text="📊 By project (all time)", callback_data="stats:project")]
+        [InlineKeyboardButton(text="📊 By project (all time)", callback_data="stats:project")],
+        [InlineKeyboardButton(text="📆 Custom period", callback_data="stats:custom")]
     ]
     keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
     await message.answer("Choose a period for statistics:", reply_markup=keyboard)
@@ -798,14 +980,29 @@ async def handle_callback(callback: types.CallbackQuery):
             message = format_stats_message(
                 stats, "for the week"
             )
-            await callback.message.edit_text(message)
+            # Split message if too long
+            message_parts = split_message(message)
+            await callback.message.edit_text(message_parts[0])
+            # Send remaining parts as new messages
+            for part in message_parts[1:]:
+                await callback.message.answer(part)
 
         elif stats_type == "month":
             stats = await get_stats_for_current_month(user_id)
             message = format_stats_message(
                 stats, "for the month"
             )
-            await callback.message.edit_text(message)
+            # Split message if too long
+            message_parts = split_message(message)
+            await callback.message.edit_text(message_parts[0])
+            # Send remaining parts as new messages
+            for part in message_parts[1:]:
+                await callback.message.answer(part)
+
+        elif stats_type == "custom":
+            # Start custom period selection
+            user_timers[user_id] = {'state': 'stats_awaiting_start_date'}
+            await callback.message.edit_text("Enter start date in format DD MM YY (e.g.: 15 08 24):")
 
         elif stats_type == "project":
             # Show project list for selection
@@ -856,7 +1053,12 @@ async def handle_callback(callback: types.CallbackQuery):
                     comment = r['comment'] or "-"
                     message += f"{sess_date} | {time_str} | {comment}\n"
 
-            await callback.message.edit_text(message)
+            # Split message if too long
+            message_parts = split_message(message)
+            await callback.message.edit_text(message_parts[0])
+            # Send remaining parts as new messages
+            for part in message_parts[1:]:
+                await callback.message.answer(part)
 
     elif callback.data.startswith("manual_project:"):
         # Manual entry for existing project
@@ -961,6 +1163,65 @@ async def handle_manual_date(message: types.Message):
     user_timers[user_id]['state'] = 'manual_awaiting_time'
 
     await message.answer(f"Date: {parsed_date.strftime('%d.%m.%Y')}\n\nEnter hours spent in format HH:MM (e.g.: 02:30):")
+
+
+@dp.message(lambda message: user_timers.get(message.from_user.id, {}).get('state') == 'stats_awaiting_start_date')
+async def handle_stats_start_date(message: types.Message):
+    user_id = message.from_user.id
+    date_text = message.text.strip()
+
+    parsed_date = validate_date_format(date_text)
+    if not parsed_date:
+        await message.answer("❌ Invalid date format. Use format DD MM YY (e.g.: 15 08 24):")
+        return
+
+    # Save start date and move to end date input
+    user_timers[user_id]['stats_start_date'] = parsed_date
+    user_timers[user_id]['state'] = 'stats_awaiting_end_date'
+
+    await message.answer(f"Start date: {parsed_date.strftime('%d.%m.%Y')}\n\nEnter end date in format DD MM YY (e.g.: 20 08 24):")
+
+
+@dp.message(lambda message: user_timers.get(message.from_user.id, {}).get('state') == 'stats_awaiting_end_date')
+async def handle_stats_end_date(message: types.Message):
+    user_id = message.from_user.id
+    date_text = message.text.strip()
+
+    parsed_date = validate_date_format(date_text)
+    if not parsed_date:
+        await message.answer("❌ Invalid date format. Use format DD MM YY (e.g.: 20 08 24):")
+        return
+
+    start_date = user_timers[user_id]['stats_start_date']
+
+    # Validate that end date is after start date
+    if parsed_date < start_date:
+        await message.answer("❌ End date must be after start date. Enter end date in format DD MM YY (e.g.: 20 08 24):")
+        return
+
+    # Fetch stats for the custom period
+    stats = await get_stats_for_custom_period(user_id, start_date, parsed_date)
+
+    # Clear the state
+    user_timers[user_id] = {'state': 'idle'}
+
+    if not stats:
+        await message.answer("📊 Statistics for custom period\n\nNo data yet.")
+        return
+
+    # Generate summary message
+    summary = format_summary_message(stats, "for custom period")
+    await message.answer(summary)
+
+    # Generate and send CSV file
+    csv_file_path = generate_csv_file(stats, "custom_period")
+    try:
+        file = FSInputFile(csv_file_path, filename=f"stats_{start_date.strftime('%d%m%y')}-{parsed_date.strftime('%d%m%y')}.csv")
+        await message.answer_document(file)
+    finally:
+        # Clean up temporary file
+        if os.path.exists(csv_file_path):
+            os.unlink(csv_file_path)
 
 
 @dp.message(lambda message: user_timers.get(message.from_user.id, {}).get('state') == 'manual_awaiting_time')
