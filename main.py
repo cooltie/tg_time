@@ -47,8 +47,22 @@ async def check_user_exists(telegram_id):
             start_time TIMESTAMP,
             end_time TIMESTAMP,
             duration INTERVAL,
-            comment TEXT
+            comment TEXT,
+            archived BOOLEAN DEFAULT FALSE
         );
+    """)
+
+    # Add archived column if it doesn't exist (migration)
+    await conn.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name='projects' AND column_name='archived'
+            ) THEN
+                ALTER TABLE projects ADD COLUMN archived BOOLEAN DEFAULT FALSE;
+            END IF;
+        END $$;
     """)
 
     # Check if user exists
@@ -124,20 +138,68 @@ async def update_project_type(telegram_id, project_name, project_type):
 
 
 async def get_user_projects(telegram_id):
-    """Получает список уникальных проектов пользователя из БД"""
+    """Получает список уникальных проектов пользователя из БД (только активные)"""
     conn = await asyncpg.connect(DATABASE_URL)
 
-    # Получаем уникальные проекты пользователя
+    # Получаем уникальные активные проекты пользователя
     projects = await conn.fetch("""
         SELECT DISTINCT p.project_name
         FROM projects p
         JOIN users u ON p.user_id = u.id
-        WHERE u.telegram_id = $1
+        WHERE u.telegram_id = $1 AND (p.archived = FALSE OR p.archived IS NULL)
         ORDER BY p.project_name
     """, telegram_id)
 
     await conn.close()
     return [project['project_name'] for project in projects]
+
+
+async def get_archived_projects(telegram_id):
+    """Получает список архивных проектов пользователя"""
+    conn = await asyncpg.connect(DATABASE_URL)
+
+    projects = await conn.fetch("""
+        SELECT DISTINCT p.project_name
+        FROM projects p
+        JOIN users u ON p.user_id = u.id
+        WHERE u.telegram_id = $1 AND p.archived = TRUE
+        ORDER BY p.project_name
+    """, telegram_id)
+
+    await conn.close()
+    return [project['project_name'] for project in projects]
+
+
+async def archive_project(telegram_id, project_name):
+    """Архивирует проект"""
+    conn = await asyncpg.connect(DATABASE_URL)
+
+    await conn.execute("""
+        UPDATE projects p
+        SET archived = TRUE
+        FROM users u
+        WHERE p.user_id = u.id
+        AND u.telegram_id = $1
+        AND p.project_name = $2
+    """, telegram_id, project_name)
+
+    await conn.close()
+
+
+async def unarchive_project(telegram_id, project_name):
+    """Восстанавливает проект из архива"""
+    conn = await asyncpg.connect(DATABASE_URL)
+
+    await conn.execute("""
+        UPDATE projects p
+        SET archived = FALSE
+        FROM users u
+        WHERE p.user_id = u.id
+        AND u.telegram_id = $1
+        AND p.project_name = $2
+    """, telegram_id, project_name)
+
+    await conn.close()
 
 
 async def get_stats_for_period(telegram_id, days=None):
@@ -615,6 +677,32 @@ def format_summary_message(stats, period_name):
         lines.append(f"  • {project_name}: {time_str} ({sessions_count} sessions)")
 
     lines.append("")
+
+    # Daily summary
+    lines.append("📅 By days:")
+
+    # Group sessions by date
+    daily_stats = {}
+    for project_name, sessions in stats.items():
+        for s in sessions:
+            start_dt = s.get("start_time")
+            if not start_dt:
+                continue
+            date_key = start_dt.date()
+            if date_key not in daily_stats:
+                daily_stats[date_key] = {"sessions": 0, "seconds": 0}
+            daily_stats[date_key]["sessions"] += 1
+            daily_stats[date_key]["seconds"] += int(s.get("seconds") or 0)
+
+    # Display daily stats in reverse chronological order
+    for date_key in sorted(daily_stats.keys(), reverse=True):
+        day_data = daily_stats[date_key]
+        hours, remainder = divmod(day_data["seconds"], 3600)
+        minutes, _ = divmod(remainder, 60)
+        time_str = f"{int(hours):02}:{int(minutes):02}"
+        lines.append(f"  • {date_key.strftime('%d.%m.%Y')} (sessions: {day_data['sessions']}, time spent: {time_str})")
+
+    lines.append("")
     lines.append("📎 Detailed data exported to CSV file")
 
     return "\n".join(lines)
@@ -861,6 +949,46 @@ async def cmd_stats(message: types.Message):
     await message.answer("Choose a period for statistics:", reply_markup=keyboard)
 
 
+# Function for handling /archive command
+@dp.message(Command('archive'))
+async def cmd_archive(message: types.Message):
+    user_id = message.from_user.id
+
+    # Get active projects
+    projects = await get_user_projects(user_id)
+
+    if not projects:
+        await message.answer("You don't have any active projects to archive.")
+        return
+
+    buttons = []
+    for project_name in projects:
+        buttons.append([InlineKeyboardButton(text=project_name, callback_data=f"archive_project:{project_name}")])
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+    await message.answer("Choose a project to archive:", reply_markup=keyboard)
+
+
+# Function for handling /unarchive command
+@dp.message(Command('unarchive'))
+async def cmd_unarchive(message: types.Message):
+    user_id = message.from_user.id
+
+    # Get archived projects
+    projects = await get_archived_projects(user_id)
+
+    if not projects:
+        await message.answer("You don't have any archived projects.")
+        return
+
+    buttons = []
+    for project_name in projects:
+        buttons.append([InlineKeyboardButton(text=project_name, callback_data=f"unarchive_project:{project_name}")])
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+    await message.answer("Choose a project to restore:", reply_markup=keyboard)
+
+
 # Function for handling /start command
 @dp.message(Command('start'))
 async def cmd_start(message: types.Message):
@@ -1077,6 +1205,18 @@ async def handle_callback(callback: types.CallbackQuery):
     elif callback.data == "manual_save":
         # Save manual entry
         await save_manual_entry(user_id, callback.message)
+
+    elif callback.data.startswith("archive_project:"):
+        # Archive a project
+        project_name = callback.data.replace("archive_project:", "")
+        await archive_project(user_id, project_name)
+        await callback.message.edit_text(f"✅ Project '{project_name}' has been archived.\n\nIt won't appear in the project list anymore, but will remain in statistics.\n\nUse /unarchive to restore it.")
+
+    elif callback.data.startswith("unarchive_project:"):
+        # Unarchive a project
+        project_name = callback.data.replace("unarchive_project:", "")
+        await unarchive_project(user_id, project_name)
+        await callback.message.edit_text(f"✅ Project '{project_name}' has been restored.\n\nIt will now appear in the project list again.")
 
     await callback.answer()
 
