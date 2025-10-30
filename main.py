@@ -154,6 +154,23 @@ async def get_user_projects(telegram_id):
     return [project['project_name'] for project in projects]
 
 
+async def get_all_user_projects(telegram_id):
+    """Получает список всех проектов пользователя из БД (включая архивные)"""
+    conn = await asyncpg.connect(DATABASE_URL)
+
+    # Получаем все уникальные проекты пользователя
+    projects = await conn.fetch("""
+        SELECT DISTINCT p.project_name, p.archived
+        FROM projects p
+        JOIN users u ON p.user_id = u.id
+        WHERE u.telegram_id = $1
+        ORDER BY p.project_name
+    """, telegram_id)
+
+    await conn.close()
+    return [project['project_name'] for project in projects]
+
+
 async def get_archived_projects(telegram_id):
     """Получает список архивных проектов пользователя"""
     conn = await asyncpg.connect(DATABASE_URL)
@@ -1133,8 +1150,8 @@ async def handle_callback(callback: types.CallbackQuery):
             await callback.message.edit_text("Enter start date in format DD MM YY (e.g.: 15 08 24):")
 
         elif stats_type == "project":
-            # Show project list for selection
-            projects = await get_user_projects(user_id)
+            # Show project list for selection (including archived projects)
+            projects = await get_all_user_projects(user_id)
             if not projects:
                 await callback.message.edit_text("You don't have any projects yet.")
             else:
