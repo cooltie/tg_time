@@ -427,7 +427,6 @@ def format_stats_message(stats, period_name):
     lines = [period_header, ""]
 
     # Add general summary for period
-    lines.append("Total:")
     total_by_project = {}
     for project_name, sessions in stats.items():
         total_seconds = sum(int(s.get("seconds") or 0) for s in sessions)
@@ -436,26 +435,39 @@ def format_stats_message(stats, period_name):
             "total_seconds": total_seconds,
             "sessions_count": sessions_count
         }
-    
+
+    grand_total_seconds = sum(t["total_seconds"] for t in total_by_project.values())
+    g_hours, g_rem = divmod(grand_total_seconds, 3600)
+    g_minutes, _ = divmod(g_rem, 60)
+    lines.append(f"Total: ⏱ {int(g_hours):02}:{int(g_minutes):02}")
+
     for project_name in sorted(total_by_project.keys()):
         totals = total_by_project[project_name]
         total_seconds = totals["total_seconds"]
         sessions_count = totals["sessions_count"]
-        
-        # Format time
+
         hours, remainder = divmod(total_seconds, 3600)
         minutes, _ = divmod(remainder, 60)
         time_str = f"{int(hours):02}:{int(minutes):02}"
-        
+
         lines.append(f"{project_name} | {sessions_count} — {time_str}")
-    
-    lines.append("")  # Empty line before detailed statistics
+
+    lines.append("")
 
     for date_key in sorted(grouped.keys(), reverse=True):
-        lines.append(f"## {date_key.strftime('%d.%m.%Y')}")
-        lines.append("")
-
         projects_for_date = grouped[date_key]
+        day_grand_total_seconds = sum(
+            int(s.get("seconds") or 0)
+            for sessions in projects_for_date.values()
+            for s in sessions
+        )
+        d_hours, d_rem = divmod(day_grand_total_seconds, 3600)
+        d_minutes, _ = divmod(d_rem, 60)
+        lines.append(
+            f"## {date_key.strftime('%d.%m.%Y')} — ⏱ "
+            f"{int(d_hours):02}:{int(d_minutes):02}"
+        )
+        lines.append("")
         for project_name in sorted(projects_for_date.keys()):
             # Get project statistics only for this day
             day_sessions = projects_for_date[project_name]
