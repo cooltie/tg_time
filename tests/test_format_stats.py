@@ -1,10 +1,14 @@
 import os
+import sys
 from datetime import datetime
+from unittest.mock import MagicMock, patch
 
-os.environ.setdefault("API_TOKEN", "123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw")
+os.environ.setdefault("API_TOKEN", "test")
 os.environ.setdefault("DATABASE_URL", "postgresql://test")
 
-from main import format_stats_message
+sys.modules.pop("main", None)
+with patch("aiogram.Bot", MagicMock()):
+    from main import format_stats_message
 
 
 def _sample_stats():
