@@ -807,12 +807,18 @@ async def save_manual_entry(user_id, message):
     """Сохраняет ручную запись времени"""
     timer_data = user_timers.get(user_id, {})
 
+    # Guard against double-tap on "Save": only the first press proceeds
+    if timer_data.get('state') != 'manual_ready_to_save':
+        return
+    timer_data['state'] = 'saving'
+
     project_name = timer_data.get('manual_project')
     manual_date = timer_data.get('manual_date')
     manual_duration_seconds = timer_data.get('manual_duration_seconds')
     manual_comment = timer_data.get('manual_comment')
 
     if not all([project_name, manual_date, manual_duration_seconds, manual_comment]):
+        timer_data['state'] = 'manual_ready_to_save'
         await message.edit_text("❌ Error: not all data filled.")
         return
 
